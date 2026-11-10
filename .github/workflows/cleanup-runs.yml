@@ -1,0 +1,79 @@
+###############################################################################
+# 清理 Actions 运行记录，只保留最近 N 条
+#
+# 为什么做成 workflow 而不是在本地删：本仓库是私有的，删运行记录必须带 token，
+# 而 runner 自带的 GITHUB_TOKEN（下面显式申请 actions: write）天然具备这个权限，
+# 不需要任何人在本地持有凭据。
+#
+# 用法：Actions → Cleanup Actions Runs → Run workflow，keep 默认 8。
+# 只删「已完成」的记录，正在跑和排队中的会跳过。
+###############################################################################
+name: Cleanup Actions Runs
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: '保留最近多少条运行记录'
+        required: false
+        default: '8'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 删除旧运行记录
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: ${{ inputs.keep }}
+        run: |
+          set -euo pipefail
+          keep="${KEEP:-8}"
+          case "$keep" in
+            ''|*[!0-9]*) echo "::error::keep 必须是数字，收到 '$keep'"; exit 1 ;;
+          esac
+          echo "保留最近 $keep 条，其余删除"
+
+          # 按创建时间倒序，只取已完成的记录（in_progress / queued 跳过，
+          # 删它们会直接把正在跑的构建掐断）
+          mapfile -t ids < <(
+            gh run list --limit 500 \
+              --json databaseId,status,createdAt \
+              --jq 'sort_by(.createdAt) | reverse | .[] | select(.status == "completed") | .databaseId'
+          ) || true
+
+          if [ "${#ids[@]}" -eq 0 ]; then
+            echo "::warning::没取到任何已完成的运行记录，检查 actions: write 权限"
+            exit 0
+          fi
+          echo "已完成记录共 ${#ids[@]} 条"
+
+          deleted=0
+          skipped=0
+          for i in "${!ids[@]}"; do
+            if [ "$i" -lt "$keep" ]; then
+              continue
+            fi
+            if gh run delete "${ids[$i]}"; then
+              deleted=$((deleted + 1))
+            else
+              skipped=$((skipped + 1))
+              echo "::warning::删除 ${ids[$i]} 失败，跳过"
+            fi
+          done
+
+          {
+            echo "### Actions 记录清理"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 保留 | $keep |"
+            echo "| 清理前已完成 | ${#ids[@]} |"
+            echo "| 已删除 | $deleted |"
+            echo "| 删除失败 | $skipped |"
+          } >>"$GITHUB_STEP_SUMMARY"
