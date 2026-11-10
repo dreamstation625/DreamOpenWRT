@@ -44,6 +44,8 @@ files/                    写进固件的默认配置（overlay，会被拷到�
 | `luci-app-upnp` + `miniupnpd` | 内网设备自动端口映射 |
 | `luci-app-hd-idle` + `hd-idle` | 机械盘空闲后停转（硬盘休眠） |
 
+**随固件带的排障工具**：`tcpdump`（抓包）、`strace`（系统调用）、`lsof`（端口占用）、`ethtool`（网卡速率/offload）、`iperf3`（吞吐测试）、`dig`（来自 `bind-dig`）。另外装了 `kmod-tcp-bbr`——这个包自带 `/etc/sysctl.d/12-tcp-bbr.conf`，装上就自动启用 BBR，不用手写 sysctl。
+
 **不含 Docker**：`docker`、`dockerd`、`luci-app-dockerman` 一个都没有编进固件，`config/openwrt.config` 里没有任何 docker 相关配置行。刷完在 LuCI「软件包」里也看不到 Docker。
 
 **AdGuardHome 的二进制是内置的**：构建时下载官方 release（`AdGuardHome_linux_amd64.tar.gz`，约 12MB，CGO 静态链接，musl 上直接可跑），校验 sha256 后解到 `/usr/bin/AdGuardHome/AdGuardHome`，正好是经典界面的默认 `binpath`。所以这一项**不需要联网**，代价是固件体积增加约 12~15MB。

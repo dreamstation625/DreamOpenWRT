@@ -301,6 +301,8 @@ REQUIRED_SYMBOLS=(
   CONFIG_PACKAGE_luci-ssl
   CONFIG_PACKAGE_luci-mod-dashboard
   CONFIG_PACKAGE_luci-app-nlbwmon
+  CONFIG_PACKAGE_luci-app-uhttpd
+  CONFIG_PACKAGE_kmod-tcp-bbr
   CONFIG_PACKAGE_luci-theme-argon
   CONFIG_PACKAGE_luci-compat
   CONFIG_PACKAGE_luci-app-firewall
