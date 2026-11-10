@@ -93,6 +93,46 @@ jobs:
             files/usr/share/rpcd/acl.d/luci-app-firewall-custom.json
           echo "配置文件检查通过"
 
+      # 直接复刻 scripts/feeds 的 parse_file 逻辑来校验，而不是凭感觉写正则：
+      # 它先 s/#.+$// 去注释，要求 # 后面至少一个字符，所以「只有 # 的一行」
+      # 不会被当成注释，而是会被当配置行解析，然后 die "Syntax error"。
+      # 本地没有 OpenWrt 源码树也跑不了 feeds 命令，只能这样离线挡住。
+      - name: 检查 feeds.conf
+        run: |
+          set -euo pipefail
+          python3 - feeds.conf <<'PY'
+          import re
+          import sys
+
+          pat = re.compile(
+              r"^src-([\w\-]+)((?:\s+--\w+(?:=\S+)?)*)\s+(\w+)(?:\s+(\S.*))?$",
+              re.ASCII,
+          )
+
+          bad = 0
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              for lineno, raw in enumerate(fh, 1):
+                  line = re.sub(r"#.+$", "", raw.rstrip("\n"), flags=re.ASCII)
+                  if not re.search(r"\S", line, re.ASCII):
+                      continue
+                  m = pat.match(line)
+                  if not m or not m.group(1) or not m.group(3):
+                      print(f"::error file=feeds.conf,line={lineno}::这行 feeds 解析不了：{line}")
+                      bad += 1
+          if bad:
+              print("提示：只有 # 的行也会被当成配置行，注释里必须 # 后面带内容")
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: 检查 overlay 脚本语法
+        run: |
+          set -euo pipefail
+          for f in files/etc/uci-defaults/*; do
+            [ -f "$f" ] || continue
+            sh -n "$f"
+            echo "sh -n 通过: $f"
+          done
+
   build:
     needs: lint
     runs-on: ubuntu-latest
