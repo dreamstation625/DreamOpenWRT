@@ -152,15 +152,20 @@ install_deps() {
 # 源码
 ###############################################################################
 
-# OpenWrt 的 rules.mk 把 CCACHE_NOCOMPRESS 固定成 true，cache 体积约为压缩后的 2~3 倍。
-# Actions 的缓存池是按仓库共享的 10GB，必须压，否则后半程撞上限会触发清空，
-# 最该命中的对象反而被丢掉。上游改写法时这里要跟着改，所以找不到就报错而不是静默跳过。
+# OpenWrt 的 rules.mk 会 export CCACHE_NOCOMPRESS:=true，cache 体积约为压缩后的 2~3 倍。
+# Actions 的缓存池是按仓库共享的 10GB，必须压。
+#
+# ⚠ 不能把它改成 =false：ccache 4.x 的布尔解析不接受 "false"，
+#   会直接报 CCACHE_NOCOMPRESS: invalid boolean environment variable value "false"
+#   然后退出，表现成 "C compiler cannot create executables"（已经踩过一次）。
+#   正确做法是把那句删掉，改用 CCACHE_COMPRESS=true。
 patch_ccache_compression() {
   local rules="$SRC/rules.mk"
-  grep -q 'CCACHE_NOCOMPRESS:=true' "$rules" \
-    || die "rules.mk 里没有 CCACHE_NOCOMPRESS:=true，上游可能改了写法，请更新 patch_ccache_compression"
-  sed -i 's/CCACHE_NOCOMPRESS:=true/CCACHE_NOCOMPRESS:=false/' "$rules"
-  info "已开启 ccache 压缩"
+  grep -q 'CCACHE_NOCOMPRESS' "$rules" \
+    || die "rules.mk 里没有 CCACHE_NOCOMPRESS，上游可能改了写法，请更新 patch_ccache_compression"
+  sed -i '/CCACHE_NOCOMPRESS/d' "$rules"
+  export CCACHE_COMPRESS=true
+  info "已开启 ccache 压缩（CCACHE_COMPRESS=true）"
 }
 
 sync_source() {
@@ -406,7 +411,11 @@ build_image() {
 
   # 输出写到文件而不是直接刷屏：Actions 日志有大小上限，几万行 make 输出会把
   # 真正的报错挤出可见范围。前台只留每分钟一行心跳。
-  ( cd "$SRC" && make -j"$JOBS" V=s ) >"$BUILD_LOG" 2>&1 &
+  #
+  # 子 shell 里先 trap - ERR：否则 set -E 会让它按自己的行号打一条
+  # "[FAIL] 第 N 行命令失败"，那个行号是子 shell 里的、指向不着边际的位置，
+  # 真正的失败处理交给下面的 wait + die。
+  ( trap - ERR; cd "$SRC" && make -j"$JOBS" V=s ) >"$BUILD_LOG" 2>&1 &
   local pid=$!
   local rc=0
 
@@ -419,8 +428,29 @@ build_image() {
 
   wait "$pid" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf '\n编译日志最后 120 行：\n'
-    tail -n 120 "$BUILD_LOG" || true
+    # make -j 下末尾几十行往往只剩并行任务的输出，真正的报错在前面。
+    # 按优先级找第一条：OpenWrt 收尾一定会打 "ERROR: <pkg> failed to build."，
+    # 这条最有信息量；其次是 make 的 "*** [...]"；再往后才是不太精确的关键字。
+    # 注意别把 kconfig 的 "recursive dependency" 之类噪音当成根因（它带 error: 前缀）。
+    local first="" pat n from
+    for pat in 'ERROR: .*failed to build' '\*\*\* \[' 'configure: error' 'No space left' 'error: '; do
+      n="$(grep -nE "$pat" "$BUILD_LOG" | head -1 | cut -d: -f1)"
+      if [ -n "$n" ]; then
+        first="$n"
+        break
+      fi
+    done
+    if [ -n "$first" ]; then
+      from=$(( first > 20 ? first - 20 : 1 ))
+      printf '\n===== 第一个报错附近（日志第 %s 行）=====\n' "$first"
+      sed -n "${from},$(( first + 10 ))p" "$BUILD_LOG"
+    else
+      warn "日志里没匹配到已知的报错关键字，直接看末尾"
+    fi
+    printf '\n===== 日志末尾 40 行 =====\n'
+    tail -n 40 "$BUILD_LOG" || true
+    printf '\n===== 磁盘占用 =====\n'
+    df -h "$WORKDIR" || true
     die "编译失败（退出码 $rc），完整日志 $BUILD_LOG"
   fi
   ok "编译完成，耗时 $(fmt_dur $(($(date +%s) - START_TS)))"
