@@ -1,0 +1,12 @@
+# 这个文件以 shell 脚本方式被 fw4 执行（/etc/config/firewall 里的 config include）。
+# 直接写 nft 命令，改完执行 /etc/init.d/firewall reload 生效。
+#
+# 也可以在 LuCI 的「网络 → 防火墙 → 自定义规则」页面里编辑。
+# 页面写的就是这个文件，但 fw4 只执行 config include 声明的脚本——
+# 默认配置里没有 include 段，所以首次启动脚本会补一条，否则那个页面是"写了不生效"的。
+#
+# 例子：把局域网 DNS 查询劫持到本机（AdGuardHome / MosDNS 场景）
+#   nft insert rule inet fw4 mangle_prerouting iifname "br-lan" udp dport 53 redirect to :53
+#
+# 例子：从 LAN 网段直接封掉某个 IP
+#   nft add rule inet fw4 input ip saddr 192.168.31.66 drop

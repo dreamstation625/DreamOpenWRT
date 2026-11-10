@@ -48,6 +48,18 @@ if [ -f /etc/config/uhttpd ]; then
 	uci -q commit uhttpd
 fi
 
+# ---- 让 LuCI「防火墙 → 自定义规则」页面真正生效 ----
+# fw4 只执行 /etc/config/firewall 里 config include 声明的脚本，而默认配置里
+# 一条 include 都没有，所以那个页面写进 /etc/firewall.user 的规则永远不会被执行。
+# 这里补一条 script 类型的 include；文件本身随固件提供（缺了会让每次启动都报 include 失败）。
+if ! uci -q get 'firewall.@include[0]' >/dev/null 2>&1; then
+	uci add firewall include >/dev/null
+	uci set 'firewall.@include[-1].path=/etc/firewall.user'
+	uci set 'firewall.@include[-1].type=script'
+	uci set 'firewall.@include[-1].enabled=1'
+	uci commit firewall
+fi
+
 # ---- 清掉三方 feed 的软件源 ----
 # 这些包已经编进固件，但上游没有对应的 apk 仓库。留着会让 apk update 一直 404。
 if [ -f /etc/apk/repositories.d/distfeeds.list ]; then
