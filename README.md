@@ -19,7 +19,7 @@ files/                    写进固件的默认配置（overlay，会被拷到�
 | 上游 | `openwrt/openwrt` @ `v25.12.6`（可用 `OPENWRT_REF` 覆盖） |
 | 目标 | x86/64 generic，SquashFS + GRUB + EFI，`rootfs` 分区 4096MB |
 | 产物 | `*-combined.img.gz`、`*-combined-efi.img.gz`、`*-rootfs.tar.gz`、manifest、sha256sums |
-| 后台 | `http://192.168.31.254`（只开 80，不走 HTTPS） |
+| 后台 | `https://192.168.31.254`（80 自动跳 https；自签证书由 uhttpd 首次启动时用 px5g 生成，浏览器会报一次警告） |
 | root 密码 | `root` |
 | 时区 / 语言 | `Asia/Shanghai` / 简体中文 |
 | 主题 | Argon |
@@ -32,9 +32,11 @@ files/                    写进固件的默认配置（overlay，会被拷到�
 | 包 | 作用 |
 | --- | --- |
 | `luci-app-openclash` | Clash / mihomo 的 LuCI 前端：订阅、规则分流、TProxy/TUN |
+| `luci-mod-dashboard` | 官方新版概览首页，可交互图表 + 卡片布局 |
 | `luci-app-mosdns` + `mosdns` | DNS 分流与缓存，常和 OpenClash 搭配 |
 | `luci-app-adguardhome` | DNS 去广告，经典 Lua 界面；AdGuardHome 二进制已内置到 `/usr/bin/AdGuardHome/`，离线可用 |
 | `luci-app-diskman` | 磁盘分区 / 格式化 / 挂载 / SMART |
+| `luci-app-nlbwmon` | 按局域网设备统计上下行流量和连接数 |
 | `luci-app-advancedplus` | sirpdboy 的高级设置合集 |
 | `luci-app-syscontrol` | 系统控制面板（进程、服务、温度等） |
 | `luci-app-filemanager` | LuCI 里的文件管理器 |
@@ -128,6 +130,7 @@ x86 的 `*-combined-efi.img.gz` 本身就是 sysupgrade 镜像，直接在 LuCI 
 | 增加必需项校验 | 关键项缺一个就直接失败，其余被丢弃的逐条列出 |
 | 加 `CONFIG_DEVEL=y` + `CONFIG_CCACHE=y` | OpenWrt 只认 `CONFIG_CCACHE`（`rules.mk:347`），而它挂在 `menuconfig DEVEL` 下面，不开 DEVEL 会被 defconfig 丢掉；原来只 `export USE_CCACHE=1`，ccache 实际没生效 |
 | 强制 ccache 压缩 | `rules.mk` 默认 `CCACHE_NOCOMPRESS:=true`，缓存体积是压缩后的 2~3 倍，会把 Actions 的 10GB 池吃满 |
+| Web 服务器保持官方 uhttpd + `luci-ssl` | 参考脚本换成 nginx 一整套，还把 443、证书、redirect 全删了只留 80。官方 25.12 默认 80/443 都监听、证书由 uhttpd 启动时调 px5g 生成，没有理由砍掉 |
 | 三方 feed 锁 commit | 原来全部跟 master，上游一改就可能编译失败或刷进去出问题 |
 | 不自制 LuCI 页面、只修官方那个 | 原来那套「自定义规则」页和官方 `luci-app-firewall` 的 `firewall/custom` 撞同一路径、同一菜单项，`files/` 覆盖时会顶掉官方页面。删掉后用一条 `config include` 让官方页面真正生效（它默认是"写了不生效"的） |
 | 不源码编译 `adguardhome`，改成嵌入官方二进制 | packages feed 里那个要从 Go 源码编、还得先编 golang 工具链，2 核上 20~40 分钟；改成下载官方 release + sha256 校验 + 写进 `files/`，编译时间 0，代价是固件 +12~15MB |

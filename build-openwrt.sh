@@ -298,7 +298,9 @@ REQUIRED_SYMBOLS=(
   CONFIG_TARGET_x86_64_DEVICE_generic
   CONFIG_PACKAGE_luci
   CONFIG_PACKAGE_luci-base
-  CONFIG_PACKAGE_luci-nginx
+  CONFIG_PACKAGE_luci-ssl
+  CONFIG_PACKAGE_luci-mod-dashboard
+  CONFIG_PACKAGE_luci-app-nlbwmon
   CONFIG_PACKAGE_luci-theme-argon
   CONFIG_PACKAGE_luci-compat
   CONFIG_PACKAGE_luci-app-firewall
