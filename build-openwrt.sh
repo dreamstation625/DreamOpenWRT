@@ -295,14 +295,19 @@ embed_adguardhome() {
   mkdir -p "$cache" "$dest"
   fetch_verified "$ADGUARDHOME_URL" "$ADGUARDHOME_SHA256" "$tarball"
 
-  # 只取包内那一个二进制，并剥掉 AdGuardHome/ 这层顶层目录。
-  # 写死成员名是有意的：上游一旦改包内结构就应当报错，而不是悄悄装了个错的。
+  # 不要写死包内路径：不同版本的 tar 结构不一样（v0.107.80 里二进制在顶层
+  # ./AdGuardHome，更早的版本在 AdGuardHome/ 子目录），写死成员名会直接
+  # "Not found in archive"。全解后用 find + ELF 头校验来确定哪个才是二进制。
   rm -rf "$stage"
   mkdir -p "$stage"
-  tar -xzf "$tarball" -C "$stage" --strip-components=1 AdGuardHome/AdGuardHome \
-    || die "解包 AdGuardHome 失败：包内结构可能变了"
+  tar -xzf "$tarball" -C "$stage" || die "解包 AdGuardHome 失败：tar 报错"
+  local bin
+  bin="$(find "$stage" -type f -name AdGuardHome | head -1)"
+  [ -n "$bin" ] || die "包里没有名为 AdGuardHome 的文件，上游结构变了"
+  [ "$(head -c 4 "$bin" | od -An -c | tr -d ' \n')" = "177ELF" ] \
+    || die "解出来的 AdGuardHome 不是 ELF 可执行文件（$bin）"
   # 用 install 而不是 mv + chmod：权限在建文件时一次设定，不依赖后续 chmod 生效
-  install -m 0755 "$stage/AdGuardHome" "$dest/AdGuardHome" || die "安装 AdGuardHome 失败"
+  install -m 0755 "$bin" "$dest/AdGuardHome" || die "安装 AdGuardHome 失败"
   ok "$(du -h "$dest/AdGuardHome" | cut -f1) 已写入 /usr/bin/AdGuardHome/AdGuardHome"
 }
 
