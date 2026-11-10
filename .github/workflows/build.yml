@@ -88,9 +88,10 @@ jobs:
             echo "::error::config/openwrt.config 里有重复符号：$dupes"
             exit 1
           fi
-          python3 -c "import json,sys;[json.load(open(p)) for p in sys.argv[1:]]" \
-            files/usr/share/luci/menu.d/luci-app-firewall-custom.json \
-            files/usr/share/rpcd/acl.d/luci-app-firewall-custom.json
+          # overlay 里所有 json 都过一遍语法检查。用 find + xargs -r，
+          # 现在 files/ 里没有 json 也不会判失败
+          find files -name '*.json' -print0 \
+            | xargs -0 -r python3 -c 'import json,sys;[json.load(open(p)) for p in sys.argv[1:]]'
           echo "配置文件检查通过"
 
       # 直接复刻 scripts/feeds 的 parse_file 逻辑来校验，而不是凭感觉写正则：

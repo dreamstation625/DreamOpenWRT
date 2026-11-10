@@ -103,11 +103,18 @@ Hyper-V 相关的驱动（`hv_storvsc`、`hv_netvsc`、`hv_balloon`、`hv_utils`
 
 x86 的 `*-combined-efi.img.gz` 本身就是 sysupgrade 镜像，直接在 LuCI 的「系统 → 备份/升级 → 刷写新固件」里上传即可，勾选保留配置就不会丢设置。
 
-为了让升级不丢东西，本仓库做了三件事：
+为了让升级不丢东西，本仓库做了两件事：
 
 - `CONFIG_TARGET_ROOTFS_PARTSIZE` 固定 4096。改这个值会导致已有机器无法原地升级。
-- `files/etc/sysupgrade.conf` 里额外保留面板中的自定义 nftables 规则，否则升级后规则会被新镜像覆盖成空文件。
 - `files/etc/uci-defaults/99-default-settings` 只在首次启动执行一次，升级后不会重跑，不会覆盖你后来改过的设置。
+
+### 想加自定义防火墙规则
+
+fw4 会自动 include `/etc/nftables.d/*.nft`（见 fw4 的 `ruleset.uc`），目录本身就带 README。推荐做法是**把规则文件放进仓库的 `files/etc/nftables.d/`**，比如 `files/etc/nftables.d/99-mine.nft`，然后重建固件——这样规则受 git 管理，升级也不会丢。
+
+临时改一下的话，用预装的「文件管理器」直接编辑 `/etc/nftables.d/*.nft`，再 `reload` 防火墙即可。注意这种临时改动**不在 sysupgrade 保留范围**里，重刷会丢。
+
+> LuCI 自带的「防火墙 → 自定义规则」页面（写 `/etc/firewall.user`）在 fw4 下**默认不生效**：fw4 只执行 `/etc/config/firewall` 里 `config include` 声明的脚本，而默认配置里没有任何 include 段。
 
 回滚：每次构建都产出 `build-info.txt`（源码 ref + commit + 构建时间）和 `sha256sums`，对比着换回上一个产物即可。
 
@@ -120,7 +127,7 @@ x86 的 `*-combined-efi.img.gz` 本身就是 sysupgrade 镜像，直接在 LuCI 
 | 加 `CONFIG_DEVEL=y` + `CONFIG_CCACHE=y` | OpenWrt 只认 `CONFIG_CCACHE`（`rules.mk:347`），而它挂在 `menuconfig DEVEL` 下面，不开 DEVEL 会被 defconfig 丢掉；原来只 `export USE_CCACHE=1`，ccache 实际没生效 |
 | 强制 ccache 压缩 | `rules.mk` 默认 `CCACHE_NOCOMPRESS:=true`，缓存体积是压缩后的 2~3 倍，会把 Actions 的 10GB 池吃满 |
 | 三方 feed 锁 commit | 原来全部跟 master，上游一改就可能编译失败或刷进去出问题 |
-| 面板菜单改用独立 `menu.d` 文件 | 原来用 python 改 luci feed 里的 `menu.json`，feed 换路径就静默失效 |
+| 不自制 LuCI 页面 | 原来那套「自定义规则」页和官方 `luci-app-firewall` 的 `firewall/custom` 撞同一路径、同一菜单项，`files/` 覆盖时会顶掉官方页面；规则改用 fw4 原生的 `/etc/nftables.d/*.nft` |
 | 不源码编译 `adguardhome`，改成嵌入官方二进制 | packages feed 里那个要从 Go 源码编、还得先编 golang 工具链，2 核上 20~40 分钟；改成下载官方 release + sha256 校验 + 写进 `files/`，编译时间 0，代价是固件 +12~15MB |
 | 去掉 `luci-light` | 和完整版 `luci` 同时装是纯冗余 |
 | 额外产出 `rootfs.tar.gz` | 容器 / LXC / WSL 场景可直接用，几乎不增加编译时间 |
