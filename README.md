@@ -25,7 +25,31 @@ files/                    写进固件的默认配置（overlay，会被拷到�
 | 主题 | Argon |
 | 网口 | `eth0` 加入 `br-lan`，网关 `192.168.31.1`，DNS `223.5.5.5`、`119.29.29.29` |
 
-内置：OpenClash、MosDNS、AdGuardHome（经典 LuCI）、diskman、advancedplus、syscontrol、filemanager、ttyd、UPnP、硬盘休眠，以及 Docker 相关的包**全部没有**（本仓库不装 Docker）。
+## 预装内容
+
+下面这些都**编译进了固件**，刷完机打开 LuCI 就有，不需要再用 apk 安装：
+
+| 包 | 作用 |
+| --- | --- |
+| `luci-app-openclash` | Clash / mihomo 的 LuCI 前端：订阅、规则分流、TProxy/TUN |
+| `luci-app-mosdns` + `mosdns` | DNS 分流与缓存，常和 OpenClash 搭配 |
+| `luci-app-adguardhome` | DNS 去广告，用的是 rufengsuixing 的经典 Lua 界面 |
+| `luci-app-diskman` | 磁盘分区 / 格式化 / 挂载 / SMART |
+| `luci-app-advancedplus` | sirpdboy 的高级设置合集 |
+| `luci-app-syscontrol` | 系统控制面板（进程、服务、温度等） |
+| `luci-app-filemanager` | LuCI 里的文件管理器 |
+| `luci-app-ttyd` | 网页终端 |
+| `luci-app-upnp` + `miniupnpd` | 内网设备自动端口映射 |
+| `luci-app-hd-idle` + `hd-idle` | 机械盘空闲后停转（硬盘休眠） |
+
+**不含 Docker**：`docker`、`dockerd`、`luci-app-dockerman` 一个都没有编进固件，`config/openwrt.config` 里没有任何 docker 相关配置行。刷完在 LuCI「软件包」里也看不到 Docker。
+
+**两个插件需要固件首次联网**：
+
+- OpenClash 的 clash / mihomo 内核不在固件内，第一次进页面时要下载（或手动上传核心文件）。
+- AdGuardHome 的经典界面同理，首次使用会去上游拉二进制。
+
+离线环境要用这两个，得改成编译时嵌入，代价是编译时间和固件体积都会上去。
 
 > root 密码是明文写在 `files/etc/uci-defaults/99-default-settings` 里的。仓库一旦公开，等于把默认密码公开，刷完请立刻改。
 
