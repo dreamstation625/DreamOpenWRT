@@ -84,6 +84,7 @@ SKIP_DEPS=1 ./build-openwrt.sh        # 已装好依赖，跳过 apt
 - 推 `main` 且改到 `build-openwrt.sh`、`config/`、`files/`、`feeds.conf` 时触发
 - 每周六 02:00（CST）定时重建，跟随 25.12 分支的安全更新
 - 打 `fw-v*` tag，构建完自动发 Release
+- 每次构建前后各清一次 Actions 运行记录，只保留最近 8 条（`scripts/cleanup-runs.sh`，只删已完成的，正在跑的跳过）
 
 ## 在 Hyper-V 里用
 

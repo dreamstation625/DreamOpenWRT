@@ -49,6 +49,8 @@ on:
 
 permissions:
   contents: write
+  # 清理 Actions 运行记录需要
+  actions: write
 
 concurrency:
   group: openwrt-${{ github.ref }}
@@ -63,8 +65,23 @@ env:
   DL_CACHE_EPOCH: v1
 
 jobs:
+  # 构建前先清一轮运行记录，避免堆到上百条再删。
+  # 这个 job 的脚本设计成永不失败，所以后面可以直接 needs 它，不会因为清理出错挡住建固件。
+  cleanup-before:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: 清理旧运行记录（保留最近 8 条）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          KEEP: '8'
+        run: ./scripts/cleanup-runs.sh
+
   # 先花十几秒挡住语法错误，别为了一个错别字烧掉三小时机时
   lint:
+    needs: cleanup-before
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -295,3 +312,14 @@ jobs:
             output/build-info.txt
             output/config.full
           generate_release_notes: true
+
+      # 构建完再清一次：前面那一轮清的时候本次运行还是 in_progress、不在可删列表里，
+      # 现在它已经算「已完成」了，再删一轮才能把总数压回 8 条。
+      # 用 always() 保证构建失败时也会清。
+      - name: 清理旧运行记录（构建完成后）
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          KEEP: '8'
+        run: ./scripts/cleanup-runs.sh

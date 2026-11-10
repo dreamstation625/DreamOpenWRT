@@ -165,13 +165,23 @@ patch_ccache_compression() {
 
 sync_source() {
   section "获取 OpenWrt 源码（$OPENWRT_REF）"
+  # CI 里 actions/cache 会先把 dl/ 和 .ccache/ 还原到 $SRC 下，所以这里**不能假设
+  # $SRC 不存在或为空** —— 之前用 git clone 就直接挂在
+  # "destination path already exists and is not an empty directory"。
+  # 改成 git init + fetch + checkout：在非空目录里也能建立工作树，
+  # 未跟踪的 dl/ 和 .ccache/ 不会被碰，而且比 clone 少一次全量拷贝。
   if [ -d "$SRC/.git" ]; then
     info "复用已有源码目录，更新到 $OPENWRT_REF"
     git -C "$SRC" fetch --depth 1 origin "$OPENWRT_REF"
-    git -C "$SRC" -c advice.detachedHead=false checkout -f FETCH_HEAD
   else
-    git clone --depth 1 --single-branch --branch "$OPENWRT_REF" "$OPENWRT_REPO" "$SRC"
+    info "初始化源码目录（$SRC 里可能已有 dl/、.ccache/ 缓存）"
+    mkdir -p "$SRC"
+    git -C "$SRC" init -q
+    git -C "$SRC" remote add origin "$OPENWRT_REPO" 2>/dev/null \
+      || git -C "$SRC" remote set-url origin "$OPENWRT_REPO"
+    git -C "$SRC" fetch --depth 1 origin "$OPENWRT_REF"
   fi
+  git -C "$SRC" -c advice.detachedHead=false checkout -f FETCH_HEAD
   COMMIT="$(git -C "$SRC" rev-parse HEAD)"
   patch_ccache_compression
   ok "源码 $OPENWRT_REF @ ${COMMIT:0:12}"
