@@ -256,7 +256,8 @@ verify_config() {
 
   while IFS= read -r sym; do
     grep -qxF "${sym}=y" "$SRC/.config" || dropped+=("$sym")
-  done < <(sed -n 's/^\(CONFIG_[A-Za-z0-9_]*\)=y$/\1/p' "$SCRIPT_DIR/config/openwrt.config")
+  # 字符集要带连字符，否则 CONFIG_PACKAGE_luci-app-firewall 这类符号会被整条漏掉
+  done < <(sed -n 's/^\(CONFIG_[A-Za-z0-9_-]*\)=y$/\1/p' "$SCRIPT_DIR/config/openwrt.config")
 
   if [ ${#dropped[@]} -gt 0 ]; then
     warn "另有 ${#dropped[@]} 项在 defconfig 后被丢弃（依赖不全或包名已变），核对一下："

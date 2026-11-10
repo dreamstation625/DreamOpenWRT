@@ -80,8 +80,9 @@ jobs:
       - name: 检查配置文件
         run: |
           set -euo pipefail
-          # .config 里同一个符号出现两次时，kconfig 只认最后一次，是静默踩坑的重灾区
-          dupes="$(grep -oE '^#? ?CONFIG_[A-Za-z0-9_]+' config/openwrt.config \
+          # .config 里同一个符号出现两次时，kconfig 只认最后一次，是静默踩坑的重灾区。
+          # 字符集必须带连字符：CONFIG_PACKAGE_luci-app-firewall 这类名字里全是 -
+          dupes="$(grep -oE '^#? ?CONFIG_[A-Za-z0-9_-]+' config/openwrt.config \
                    | sed 's/^#* //' | sort | uniq -d || true)"
           if [ -n "$dupes" ]; then
             echo "::error::config/openwrt.config 里有重复符号：$dupes"
