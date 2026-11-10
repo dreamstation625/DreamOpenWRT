@@ -41,6 +41,16 @@ START_TS="$(date +%s)"
 COMMIT=""
 BUILD_LOG=""
 
+# 嵌进固件的 AdGuardHome 二进制：直接用官方 release，不走源码编译。
+# packages feed 里那个 adguardhome 要从 Go 源码编，还要先编 golang 工具链，
+# 2 核上单这一项就要 20~40 分钟；而官方 tar 是 CGO 静态链接的，在 musl 上直接能跑。
+# VERSION 和 SHA256 必须成对改，SHA256 取自 GitHub release 资产的 digest 字段：
+#   curl -s https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest \
+#     | jq -r '.assets[]|select(.name=="AdGuardHome_linux_amd64.tar.gz")|.digest'
+ADGUARDHOME_VERSION="${ADGUARDHOME_VERSION:-0.107.80}"
+ADGUARDHOME_SHA256="${ADGUARDHOME_SHA256:-28593bc761d71469abdbc6f39ca42cbed763ec92b63082c729177b037ed51d18}"
+ADGUARDHOME_URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/v${ADGUARDHOME_VERSION}/AdGuardHome_linux_amd64.tar.gz"
+
 export FORCE_UNSAFE_CONFIGURE=1
 export LC_ALL=C
 
@@ -90,7 +100,7 @@ preflight() {
 APT_BASE=(
   build-essential clang flex bison g++ gawk gcc-multilib g++-multilib
   gettext git libncurses-dev libssl-dev python3-setuptools rsync swig
-  unzip zlib1g-dev file wget ccache quilt zstd libelf-dev time xsltproc
+  unzip zlib1g-dev file wget curl ccache quilt zstd libelf-dev time xsltproc
 )
 # 只有个别语言生态的包才用得上，装不上不阻断构建
 APT_EXTRA=(ecj fastjar java-propose-classpath ocaml-nox ocaml-findlib subversion libxml-parser-perl)
@@ -240,6 +250,46 @@ sync_overlay() {
 }
 
 ###############################################################################
+# 嵌入 AdGuardHome 二进制
+###############################################################################
+
+# 必须在 sync_overlay 之后跑：rsync --delete 会把这里放进 $SRC/files 的文件清掉。
+# 目标路径要和经典 LuCI 界面的默认 binpath 一致，否则它会认为自己没装而重新下载：
+#   /etc/config/AdGuardHome 里 option binpath '/usr/bin/AdGuardHome/AdGuardHome'
+embed_adguardhome() {
+  section "嵌入 AdGuardHome 二进制（v$ADGUARDHOME_VERSION）"
+  command -v curl >/dev/null 2>&1 || die "需要 curl 来下载 AdGuardHome"
+
+  local cache="$WORKDIR/cache"
+  local tarball="$cache/AdGuardHome_linux_amd64-${ADGUARDHOME_VERSION}.tar.gz"
+  local dest="$SRC/files/usr/bin/AdGuardHome"
+  mkdir -p "$cache"
+
+  if [ -f "$tarball" ] && echo "$ADGUARDHOME_SHA256  $tarball" | sha256sum -c --status 2>/dev/null; then
+    info "缓存命中：$tarball"
+  else
+    info "下载 $ADGUARDHOME_URL"
+    rm -f "$tarball"
+    curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$tarball" "$ADGUARDHOME_URL" \
+      || die "下载 AdGuardHome 失败（版本 $ADGUARDHOME_VERSION）"
+  fi
+
+  # 哈希不对就停：宁可构建失败，也别把来路不明的二进制刷进固件
+  if ! echo "$ADGUARDHOME_SHA256  $tarball" | sha256sum -c --status 2>/dev/null; then
+    rm -f "$tarball"
+    die "AdGuardHome v$ADGUARDHOME_VERSION 的 sha256 校验失败，已删除该文件"
+  fi
+
+  mkdir -p "$dest"
+  # 只取包内那一个二进制，并剥掉 AdGuardHome/ 这层顶层目录。
+  # 写死成员名是有意的：上游一旦改包内结构就应当报错，而不是悄悄装了个错的。
+  tar -xzf "$tarball" -C "$dest" --strip-components=1 AdGuardHome/AdGuardHome \
+    || die "解包 AdGuardHome 失败：包内结构可能变了"
+  chmod 0755 "$dest/AdGuardHome"
+  ok "$(du -h "$dest/AdGuardHome" | cut -f1) 已写入 /usr/bin/AdGuardHome/AdGuardHome"
+}
+
+###############################################################################
 # .config
 ###############################################################################
 
@@ -381,6 +431,7 @@ collect_artifacts() {
     echo "BUILD_HOST=$(uname -srm)"
     echo "BUILD_JOBS=$JOBS"
     echo "BUILD_DURATION=$(fmt_dur $(($(date +%s) - START_TS)))"
+    echo "ADGUARDHOME_VERSION=$ADGUARDHOME_VERSION"
   } >"$OUTPUT_DIR/build-info.txt"
 
   ok "$(ls -1 "$OUTPUT_DIR" | wc -l) 个文件写入 $OUTPUT_DIR"
@@ -464,6 +515,7 @@ main() {
   sync_feeds
   sync_custom_packages
   sync_overlay
+  embed_adguardhome
   write_config
   download_sources
   build_image

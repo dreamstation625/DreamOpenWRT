@@ -33,7 +33,7 @@ files/                    写进固件的默认配置（overlay，会被拷到�
 | --- | --- |
 | `luci-app-openclash` | Clash / mihomo 的 LuCI 前端：订阅、规则分流、TProxy/TUN |
 | `luci-app-mosdns` + `mosdns` | DNS 分流与缓存，常和 OpenClash 搭配 |
-| `luci-app-adguardhome` | DNS 去广告，用的是 rufengsuixing 的经典 Lua 界面 |
+| `luci-app-adguardhome` | DNS 去广告，经典 Lua 界面；AdGuardHome 二进制已内置到 `/usr/bin/AdGuardHome/`，离线可用 |
 | `luci-app-diskman` | 磁盘分区 / 格式化 / 挂载 / SMART |
 | `luci-app-advancedplus` | sirpdboy 的高级设置合集 |
 | `luci-app-syscontrol` | 系统控制面板（进程、服务、温度等） |
@@ -44,12 +44,16 @@ files/                    写进固件的默认配置（overlay，会被拷到�
 
 **不含 Docker**：`docker`、`dockerd`、`luci-app-dockerman` 一个都没有编进固件，`config/openwrt.config` 里没有任何 docker 相关配置行。刷完在 LuCI「软件包」里也看不到 Docker。
 
-**两个插件需要固件首次联网**：
+**AdGuardHome 的二进制是内置的**：构建时下载官方 release（`AdGuardHome_linux_amd64.tar.gz`，约 12MB，CGO 静态链接，musl 上直接可跑），校验 sha256 后解到 `/usr/bin/AdGuardHome/AdGuardHome`，正好是经典界面的默认 `binpath`。所以这一项**不需要联网**，代价是固件体积增加约 12~15MB。
 
-- OpenClash 的 clash / mihomo 内核不在固件内，第一次进页面时要下载（或手动上传核心文件）。
-- AdGuardHome 的经典界面同理，首次使用会去上游拉二进制。
+**只有 OpenClash 需要固件首次联网**：clash / mihomo 内核不在固件内，第一次进页面时要下载（或手动上传核心文件）。要离线可用得把核心也嵌进来，做法同 AdGuardHome——在 `build-openwrt.sh` 里加一段下载 + 校验 + install。
 
-离线环境要用这两个，得改成编译时嵌入，代价是编译时间和固件体积都会上去。
+升级 AdGuardHome 版本：改 `build-openwrt.sh` 顶部的 `ADGUARDHOME_VERSION` 和 `ADGUARDHOME_SHA256`（两个必须成对改），sha256 用这条命令取：
+
+```bash
+curl -s https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest \
+  | jq -r '.assets[]|select(.name=="AdGuardHome_linux_amd64.tar.gz")|.digest'
+```
 
 > root 密码是明文写在 `files/etc/uci-defaults/99-default-settings` 里的。仓库一旦公开，等于把默认密码公开，刷完请立刻改。
 
@@ -117,14 +121,14 @@ x86 的 `*-combined-efi.img.gz` 本身就是 sysupgrade 镜像，直接在 LuCI 
 | 强制 ccache 压缩 | `rules.mk` 默认 `CCACHE_NOCOMPRESS:=true`，缓存体积是压缩后的 2~3 倍，会把 Actions 的 10GB 池吃满 |
 | 三方 feed 锁 commit | 原来全部跟 master，上游一改就可能编译失败或刷进去出问题 |
 | 面板菜单改用独立 `menu.d` 文件 | 原来用 python 改 luci feed 里的 `menu.json`，feed 换路径就静默失效 |
-| 不再源码编译 `adguardhome` | packages feed 里那个要从 Go 源码编，会拉 golang 工具链，单这一项 20~40 分钟；改用经典 LuCI 界面在首次使用时下载上游二进制 |
+| 不源码编译 `adguardhome`，改成嵌入官方二进制 | packages feed 里那个要从 Go 源码编、还得先编 golang 工具链，2 核上 20~40 分钟；改成下载官方 release + sha256 校验 + 写进 `files/`，编译时间 0，代价是固件 +12~15MB |
 | 去掉 `luci-light` | 和完整版 `luci` 同时装是纯冗余 |
 | 额外产出 `rootfs.tar.gz` | 容器 / LXC / WSL 场景可直接用，几乎不增加编译时间 |
 
 ## 已知限制
 
 - **别从官方源装 kmod**。固件是自己编译的，内核和官方 `downloads.openwrt.org` 上的 kmod 不配套，装了会 `kernel version mismatch`。纯用户空间的包（`luci-app-*`、`curl` 之类）从官方源装没有问题。
-- `adguardhome` 上游二进制在**首次进入 AdGuardHome 页面时下载**，这一步需要路由器能上外网。要固件自带二进制，得改回源码编译版本。
+- AdGuardHome 二进制是**裸文件**放在 `/usr/bin/AdGuardHome/`，不受 apk 管理：`apk list` 里看不到它，升级只能改脚本版本号后重刷固件（或在该界面里点「更新核心」，但那会写进可写层、占 overlay 空间）。
 - 三方 feed 锁的是 commit，不是 tag，升不升级由你决定；`--update-pins` 只刷新 `feeds.conf`，`build-openwrt.sh` 里 `PINNED_PACKAGES` 的 sha 需要手动改（改脚本要走 review，不自动动）。
 - 首次构建：公开仓库（4 vCPU）约 2~3 小时，私有仓库（2 vCPU）约 3.5~4.5 小时；ccache 热了之后大约是首次的 1/3。GitHub 作业硬上限 6 小时，所以编译步骤卡了 300 分钟超时——真超时不会白跑，`dl/` 和 ccache 会照常存下来，下一轮带热缓存接着编。
 - 纯 Hyper-V 使用的话，`config/openwrt.config` 里那批裸机网卡驱动（r8125/r8126/r8168 等）可以整段删掉，省几分钟和十几 MB。
