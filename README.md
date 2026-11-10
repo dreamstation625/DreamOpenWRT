@@ -113,7 +113,7 @@ x86 的 `*-combined-efi.img.gz` 本身就是 sysupgrade 镜像，直接在 LuCI 
 | --- | --- |
 | `.config` 移出脚本，变成 `config/openwrt.config` | 原来用 `sed` 先删再追加的方式「修正」配置，`make defconfig` 之后被丢掉的包不会报错，只会在固件里静默少功能 |
 | 增加必需项校验 | 关键项缺一个就直接失败，其余被丢弃的逐条列出 |
-| 加 `CONFIG_CCACHE=y` | OpenWrt 只认这个开关（`rules.mk:347`）；原来只 `export USE_CCACHE=1`，ccache 实际没生效 |
+| 加 `CONFIG_DEVEL=y` + `CONFIG_CCACHE=y` | OpenWrt 只认 `CONFIG_CCACHE`（`rules.mk:347`），而它挂在 `menuconfig DEVEL` 下面，不开 DEVEL 会被 defconfig 丢掉；原来只 `export USE_CCACHE=1`，ccache 实际没生效 |
 | 强制 ccache 压缩 | `rules.mk` 默认 `CCACHE_NOCOMPRESS:=true`，缓存体积是压缩后的 2~3 倍，会把 Actions 的 10GB 池吃满 |
 | 三方 feed 锁 commit | 原来全部跟 master，上游一改就可能编译失败或刷进去出问题 |
 | 面板菜单改用独立 `menu.d` 文件 | 原来用 python 改 luci feed 里的 `menu.json`，feed 换路径就静默失效 |

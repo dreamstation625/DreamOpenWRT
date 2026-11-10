@@ -110,13 +110,32 @@ install_deps() {
   fi
 
   export DEBIAN_FRONTEND=noninteractive
-  $sudo_cmd apt-get update -qq
+  local log="$LOG_DIR/apt.log"
+
+  # 输出重定向到文件：dpkg 解包时会刷几百行 "Reading database ..."，把 Actions 日志撑长
+  # 又没有信息量。失败时再把尾部打出来。
   # shellcheck disable=SC2086
-  $sudo_cmd apt-get install -y -qq --no-install-recommends "${APT_BASE[@]}"
+  if ! $sudo_cmd apt-get update -qq >"$log" 2>&1 \
+    || ! $sudo_cmd apt-get install -y -qq --no-install-recommends "${APT_BASE[@]}" >>"$log" 2>&1; then
+    tail -n 40 "$log" >&2
+    die "基础依赖安装失败，详见 $log"
+  fi
+
+  # 可选依赖：先整体装一次，失败再逐个试。发行版升级后这些老包名会消失
+  # （Ubuntu 26.04 上 ecj / ocaml-nox 之类就没了），逐个装能看出缺哪个，
+  # 也不会因为一个装不上连累其它。
   # shellcheck disable=SC2086
-  $sudo_cmd apt-get install -y -qq --no-install-recommends "${APT_EXTRA[@]}" >/dev/null 2>&1 \
-    || warn "可选依赖未全部安装，个别包可能编译失败：${APT_EXTRA[*]}"
-  ok "依赖就绪"
+  if ! $sudo_cmd apt-get install -y -qq --no-install-recommends "${APT_EXTRA[@]}" >>"$log" 2>&1; then
+    local pkg
+    local skipped=()
+    for pkg in "${APT_EXTRA[@]}"; do
+      # shellcheck disable=SC2086
+      $sudo_cmd apt-get install -y -qq --no-install-recommends "$pkg" >>"$log" 2>&1 \
+        || skipped+=("$pkg")
+    done
+    [ ${#skipped[@]} -eq 0 ] || warn "当前发行版没有这些可选依赖，已跳过：${skipped[*]}"
+  fi
+  ok "依赖就绪（详细日志 $log）"
 }
 
 ###############################################################################
