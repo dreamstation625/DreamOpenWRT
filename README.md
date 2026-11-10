@@ -31,7 +31,7 @@ files/                    写进固件的默认配置（overlay，会被拷到�
 
 | 包 | 作用 |
 | --- | --- |
-| `luci-app-openclash` | Clash / mihomo 的 LuCI 前端：订阅、规则分流、TProxy/TUN |
+| `luci-app-openclash` | Clash / mihomo 的 LuCI 前端：订阅、规则分流、TProxy/TUN；mihomo 内核已内置到 `/etc/openclash/core/clash_meta` |
 | `luci-mod-dashboard` | 官方新版概览首页，可交互图表 + 卡片布局 |
 | `luci-app-mosdns` + `mosdns` | DNS 分流与缓存，常和 OpenClash 搭配 |
 | `luci-app-adguardhome` | DNS 去广告，经典 Lua 界面；AdGuardHome 二进制已内置到 `/usr/bin/AdGuardHome/`，离线可用 |
@@ -48,15 +48,25 @@ files/                    写进固件的默认配置（overlay，会被拷到�
 
 **不含 Docker**：`docker`、`dockerd`、`luci-app-dockerman` 一个都没有编进固件，`config/openwrt.config` 里没有任何 docker 相关配置行。刷完在 LuCI「软件包」里也看不到 Docker。
 
-**AdGuardHome 的二进制是内置的**：构建时下载官方 release（`AdGuardHome_linux_amd64.tar.gz`，约 12MB，CGO 静态链接，musl 上直接可跑），校验 sha256 后解到 `/usr/bin/AdGuardHome/AdGuardHome`，正好是经典界面的默认 `binpath`。所以这一项**不需要联网**，代价是固件体积增加约 12~15MB。
+**两个第三方二进制都是内置的**，刷完即用、不需要路由器联网下载：
 
-**只有 OpenClash 需要固件首次联网**：clash / mihomo 内核不在固件内，第一次进页面时要下载（或手动上传核心文件）。要离线可用得把核心也嵌进来，做法同 AdGuardHome——在 `build-openwrt.sh` 里加一段下载 + 校验 + install。
+| 组件 | 来源 | 装到哪 | 体积 |
+| --- | --- | --- | --- |
+| AdGuardHome | `AdGuardHome_linux_amd64.tar.gz`（v0.107.80，CGO 静态链接） | `/usr/bin/AdGuardHome/AdGuardHome`，正好是经典界面的默认 `binpath` | ~12MB |
+| mihomo | `mihomo-linux-amd64-v1.19.33.gz`（GOAMD64=v1，任何 x86-64 都能跑） | `/etc/openclash/core/clash_meta`，OpenClash 的 `meta_core_path` | ~21MB |
 
-升级 AdGuardHome 版本：改 `build-openwrt.sh` 顶部的 `ADGUARDHOME_VERSION` 和 `ADGUARDHOME_SHA256`（两个必须成对改），sha256 用这条命令取：
+两者都是构建时下载官方 release、强制校验 sha256（不匹配就删文件并让构建失败）、缓存在 `work/cache/`。固件因此比纯包管理版本大约 33~36MB。
+
+mihomo 想换 AVX2 加速版就把 `build-openwrt.sh` 顶部的 `MIHOMO_*` 换成 `mihomo-linux-amd64-v3-<ver>.gz`（老 CPU 会 SIGILL）；升级版本时 `MIHOMO_VERSION` 和 `MIHOMO_SHA256` 必须成对改，sha256 取法同下。
+
+升级这两个二进制：改 `build-openwrt.sh` 顶部的 `ADGUARDHOME_*` / `MIHOMO_*`（版本号和 sha256 必须成对改），sha256 用下面命令取（`digest` 字段就是 `sha256:` 前缀的那串）：
 
 ```bash
 curl -s https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest \
   | jq -r '.assets[]|select(.name=="AdGuardHome_linux_amd64.tar.gz")|.digest'
+
+curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
+  | jq -r '.assets[]|select(.name|test("^mihomo-linux-amd64-v[0-9]+\\.gz$"))|.digest'
 ```
 
 > root 密码是明文写在 `files/etc/uci-defaults/99-default-settings` 里的。仓库一旦公开，等于把默认密码公开，刷完请立刻改。
@@ -142,7 +152,7 @@ x86 的 `*-combined-efi.img.gz` 本身就是 sysupgrade 镜像，直接在 LuCI 
 ## 已知限制
 
 - **别从官方源装 kmod**。固件是自己编译的，内核和官方 `downloads.openwrt.org` 上的 kmod 不配套，装了会 `kernel version mismatch`。纯用户空间的包（`luci-app-*`、`curl` 之类）从官方源装没有问题。
-- AdGuardHome 二进制是**裸文件**放在 `/usr/bin/AdGuardHome/`，不受 apk 管理：`apk list` 里看不到它，升级只能改脚本版本号后重刷固件（或在该界面里点「更新核心」，但那会写进可写层、占 overlay 空间）。
+- AdGuardHome 和 mihomo 都是**裸文件**（`/usr/bin/AdGuardHome/`、`/etc/openclash/core/clash_meta`），不受 apk 管理：`apk list` 里看不到，升级只能改脚本里的版本号后重刷固件。在界面里点「更新核心」也能换，但那会写进 overlay 可写层、白占一份空间。
 - 三方 feed 锁的是 commit，不是 tag，升不升级由你决定；`--update-pins` 只刷新 `feeds.conf`，`build-openwrt.sh` 里 `PINNED_PACKAGES` 的 sha 需要手动改（改脚本要走 review，不自动动）。
 - 首次构建：公开仓库（4 vCPU）约 2~3 小时，私有仓库（2 vCPU）约 3.5~4.5 小时；ccache 热了之后大约是首次的 1/3。GitHub 作业硬上限 6 小时，所以编译步骤卡了 300 分钟超时——真超时不会白跑，`dl/` 和 ccache 会照常存下来，下一轮带热缓存接着编。
 - 纯 Hyper-V 使用的话，`config/openwrt.config` 里那批裸机网卡驱动（r8125/r8126/r8168 等）可以整段删掉，省几分钟和十几 MB。

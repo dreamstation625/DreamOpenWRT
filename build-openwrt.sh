@@ -51,6 +51,13 @@ ADGUARDHOME_VERSION="${ADGUARDHOME_VERSION:-0.107.80}"
 ADGUARDHOME_SHA256="${ADGUARDHOME_SHA256:-28593bc761d71469abdbc6f39ca42cbed763ec92b63082c729177b037ed51d18}"
 ADGUARDHOME_URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/v${ADGUARDHOME_VERSION}/AdGuardHome_linux_amd64.tar.gz"
 
+# 嵌进固件的 mihomo 内核（OpenClash 用），同样是官方 release。
+# 默认取 GOAMD64=v1 的基础版，任何 x86-64 都能跑；想用 AVX2 加速可以换成
+# mihomo-linux-amd64-v3-<ver>.gz，但换到老 CPU 上会 SIGILL。
+MIHOMO_VERSION="${MIHOMO_VERSION:-1.19.33}"
+MIHOMO_SHA256="${MIHOMO_SHA256:-132f6f3edf9a65e62f04853aed3358472e0b2b7666daa8419edfa2ddf5bb6323}"
+MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/v${MIHOMO_VERSION}/mihomo-linux-amd64-v${MIHOMO_VERSION}.gz"
+
 export FORCE_UNSAFE_CONFIGURE=1
 export LC_ALL=C
 
@@ -250,43 +257,63 @@ sync_overlay() {
 }
 
 ###############################################################################
-# 嵌入 AdGuardHome 二进制
+# 嵌入第三方二进制（官方 release，不进编译流程）
 ###############################################################################
+
+# 下载 + 强制 sha256 校验；命中缓存且哈希对得上就跳过下载。
+# 哈希不对就删文件并让构建失败：宁可失败，也别把来路不明的二进制刷进固件。
+fetch_verified() {
+  local url="$1" sha="$2" dest="$3"
+  command -v curl >/dev/null 2>&1 || die "需要 curl"
+  if [ -f "$dest" ] && echo "$sha  $dest" | sha256sum -c --status 2>/dev/null; then
+    info "缓存命中：$(basename "$dest")"
+    return 0
+  fi
+  info "下载 $url"
+  rm -f "$dest"
+  curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$dest" "$url" \
+    || die "下载失败：$url"
+  if ! echo "$sha  $dest" | sha256sum -c --status 2>/dev/null; then
+    rm -f "$dest"
+    die "sha256 校验失败：$(basename "$dest")（版本或上游资产改过？）"
+  fi
+}
 
 # 必须在 sync_overlay 之后跑：rsync --delete 会把这里放进 $SRC/files 的文件清掉。
 # 目标路径要和经典 LuCI 界面的默认 binpath 一致，否则它会认为自己没装而重新下载：
 #   /etc/config/AdGuardHome 里 option binpath '/usr/bin/AdGuardHome/AdGuardHome'
 embed_adguardhome() {
   section "嵌入 AdGuardHome 二进制（v$ADGUARDHOME_VERSION）"
-  command -v curl >/dev/null 2>&1 || die "需要 curl 来下载 AdGuardHome"
-
   local cache="$WORKDIR/cache"
   local tarball="$cache/AdGuardHome_linux_amd64-${ADGUARDHOME_VERSION}.tar.gz"
   local dest="$SRC/files/usr/bin/AdGuardHome"
-  mkdir -p "$cache"
 
-  if [ -f "$tarball" ] && echo "$ADGUARDHOME_SHA256  $tarball" | sha256sum -c --status 2>/dev/null; then
-    info "缓存命中：$tarball"
-  else
-    info "下载 $ADGUARDHOME_URL"
-    rm -f "$tarball"
-    curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$tarball" "$ADGUARDHOME_URL" \
-      || die "下载 AdGuardHome 失败（版本 $ADGUARDHOME_VERSION）"
-  fi
+  mkdir -p "$cache" "$dest"
+  fetch_verified "$ADGUARDHOME_URL" "$ADGUARDHOME_SHA256" "$tarball"
 
-  # 哈希不对就停：宁可构建失败，也别把来路不明的二进制刷进固件
-  if ! echo "$ADGUARDHOME_SHA256  $tarball" | sha256sum -c --status 2>/dev/null; then
-    rm -f "$tarball"
-    die "AdGuardHome v$ADGUARDHOME_VERSION 的 sha256 校验失败，已删除该文件"
-  fi
-
-  mkdir -p "$dest"
   # 只取包内那一个二进制，并剥掉 AdGuardHome/ 这层顶层目录。
   # 写死成员名是有意的：上游一旦改包内结构就应当报错，而不是悄悄装了个错的。
   tar -xzf "$tarball" -C "$dest" --strip-components=1 AdGuardHome/AdGuardHome \
     || die "解包 AdGuardHome 失败：包内结构可能变了"
   chmod 0755 "$dest/AdGuardHome"
   ok "$(du -h "$dest/AdGuardHome" | cut -f1) 已写入 /usr/bin/AdGuardHome/AdGuardHome"
+}
+
+# OpenClash 的 /etc/init.d/openclash 里写死 meta_core_path="/etc/openclash/core/clash_meta"，
+# 放进这个路径它就会认为核心已就绪，不再联网下载。
+embed_mihomo() {
+  section "嵌入 mihomo 内核（v$MIHOMO_VERSION）"
+  local cache="$WORKDIR/cache"
+  local gz="$cache/mihomo-linux-amd64-v${MIHOMO_VERSION}.gz"
+  local dest="$SRC/files/etc/openclash/core"
+
+  mkdir -p "$cache" "$dest"
+  fetch_verified "$MIHOMO_URL" "$MIHOMO_SHA256" "$gz"
+
+  # 官方资产是裸二进制的 gzip（不是 tar），解出来直接就是可执行文件
+  gzip -dc "$gz" >"$dest/clash_meta" || die "解压 mihomo 失败"
+  chmod 0755 "$dest/clash_meta"
+  ok "$(du -h "$dest/clash_meta" | cut -f1) 已写入 /etc/openclash/core/clash_meta"
 }
 
 ###############################################################################
@@ -436,6 +463,7 @@ collect_artifacts() {
     echo "BUILD_JOBS=$JOBS"
     echo "BUILD_DURATION=$(fmt_dur $(($(date +%s) - START_TS)))"
     echo "ADGUARDHOME_VERSION=$ADGUARDHOME_VERSION"
+    echo "MIHOMO_VERSION=$MIHOMO_VERSION"
   } >"$OUTPUT_DIR/build-info.txt"
 
   ok "$(ls -1 "$OUTPUT_DIR" | wc -l) 个文件写入 $OUTPUT_DIR"
@@ -520,6 +548,7 @@ main() {
   sync_custom_packages
   sync_overlay
   embed_adguardhome
+  embed_mihomo
   write_config
   download_sources
   build_image
