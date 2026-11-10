@@ -51,13 +51,6 @@ ADGUARDHOME_VERSION="${ADGUARDHOME_VERSION:-0.107.80}"
 ADGUARDHOME_SHA256="${ADGUARDHOME_SHA256:-28593bc761d71469abdbc6f39ca42cbed763ec92b63082c729177b037ed51d18}"
 ADGUARDHOME_URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/v${ADGUARDHOME_VERSION}/AdGuardHome_linux_amd64.tar.gz"
 
-# 嵌进固件的 mihomo 内核（OpenClash 用），同样是官方 release。
-# 默认取 GOAMD64=v1 的基础版，任何 x86-64 都能跑；想用 AVX2 加速可以换成
-# mihomo-linux-amd64-v3-<ver>.gz，但换到老 CPU 上会 SIGILL。
-MIHOMO_VERSION="${MIHOMO_VERSION:-1.19.33}"
-MIHOMO_SHA256="${MIHOMO_SHA256:-132f6f3edf9a65e62f04853aed3358472e0b2b7666daa8419edfa2ddf5bb6323}"
-MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/v${MIHOMO_VERSION}/mihomo-linux-amd64-v${MIHOMO_VERSION}.gz"
-
 export FORCE_UNSAFE_CONFIGURE=1
 export LC_ALL=C
 
@@ -286,6 +279,7 @@ embed_adguardhome() {
   section "嵌入 AdGuardHome 二进制（v$ADGUARDHOME_VERSION）"
   local cache="$WORKDIR/cache"
   local tarball="$cache/AdGuardHome_linux_amd64-${ADGUARDHOME_VERSION}.tar.gz"
+  local stage="$WORKDIR/stage-adguardhome"
   local dest="$SRC/files/usr/bin/AdGuardHome"
 
   mkdir -p "$cache" "$dest"
@@ -293,27 +287,13 @@ embed_adguardhome() {
 
   # 只取包内那一个二进制，并剥掉 AdGuardHome/ 这层顶层目录。
   # 写死成员名是有意的：上游一旦改包内结构就应当报错，而不是悄悄装了个错的。
-  tar -xzf "$tarball" -C "$dest" --strip-components=1 AdGuardHome/AdGuardHome \
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  tar -xzf "$tarball" -C "$stage" --strip-components=1 AdGuardHome/AdGuardHome \
     || die "解包 AdGuardHome 失败：包内结构可能变了"
-  chmod 0755 "$dest/AdGuardHome"
+  # 用 install 而不是 mv + chmod：权限在建文件时一次设定，不依赖后续 chmod 生效
+  install -m 0755 "$stage/AdGuardHome" "$dest/AdGuardHome" || die "安装 AdGuardHome 失败"
   ok "$(du -h "$dest/AdGuardHome" | cut -f1) 已写入 /usr/bin/AdGuardHome/AdGuardHome"
-}
-
-# OpenClash 的 /etc/init.d/openclash 里写死 meta_core_path="/etc/openclash/core/clash_meta"，
-# 放进这个路径它就会认为核心已就绪，不再联网下载。
-embed_mihomo() {
-  section "嵌入 mihomo 内核（v$MIHOMO_VERSION）"
-  local cache="$WORKDIR/cache"
-  local gz="$cache/mihomo-linux-amd64-v${MIHOMO_VERSION}.gz"
-  local dest="$SRC/files/etc/openclash/core"
-
-  mkdir -p "$cache" "$dest"
-  fetch_verified "$MIHOMO_URL" "$MIHOMO_SHA256" "$gz"
-
-  # 官方资产是裸二进制的 gzip（不是 tar），解出来直接就是可执行文件
-  gzip -dc "$gz" >"$dest/clash_meta" || die "解压 mihomo 失败"
-  chmod 0755 "$dest/clash_meta"
-  ok "$(du -h "$dest/clash_meta" | cut -f1) 已写入 /etc/openclash/core/clash_meta"
 }
 
 ###############################################################################
@@ -463,7 +443,6 @@ collect_artifacts() {
     echo "BUILD_JOBS=$JOBS"
     echo "BUILD_DURATION=$(fmt_dur $(($(date +%s) - START_TS)))"
     echo "ADGUARDHOME_VERSION=$ADGUARDHOME_VERSION"
-    echo "MIHOMO_VERSION=$MIHOMO_VERSION"
   } >"$OUTPUT_DIR/build-info.txt"
 
   ok "$(ls -1 "$OUTPUT_DIR" | wc -l) 个文件写入 $OUTPUT_DIR"
@@ -548,7 +527,6 @@ main() {
   sync_custom_packages
   sync_overlay
   embed_adguardhome
-  embed_mihomo
   write_config
   download_sources
   build_image
