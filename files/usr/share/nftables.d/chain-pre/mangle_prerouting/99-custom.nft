@@ -1,0 +1,8 @@
+# fw4 会自动加载这个目录下所有 *.nft 片段。
+# 本文件被 include 进 table inet fw4 chain mangle_prerouting，
+# 所以这里只写规则表达式，不要写 "nft add rule"。
+#
+# 面板入口：网络 -> 防火墙 -> 自定义规则
+#
+# 示例：把 LAN 的 DNS 请求劫持到本机（AdGuardHome / MosDNS 场景）
+# iifname "br-lan" udp dport 53 redirect to :53

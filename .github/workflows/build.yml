@@ -1,0 +1,251 @@
+###############################################################################
+# DreamOpenWRT — OpenWrt x86_64 自动构建
+#
+# 触发方式：
+#   1. 手动 Run workflow（可覆盖源码 ref / 并行度）
+#   2. 推送到 main 且改到构建相关内容（脚本 / 配置 / overlay / feeds）
+#   3. 每周六 02:00（CST）定时重建，跟上 25.12 分支的安全更新
+#   4. 打 fw-v* tag，构建完自动发 Release
+#
+# 缓存策略（Actions 缓存池是整仓共享的 10GB）：
+#   dl/ 源码包  固定 key，约 2GB，写一次就够；只有下载阶段完整跑完才允许保存
+#   ccache      每次 run 一个新 key + 前缀恢复，约 2~3GB；rules.mk 里已改成压缩存储
+#
+# 时间预算：公开仓库 4 vCPU / 16GB，首次 2~3 小时，ccache 热了之后 30~50 分钟。
+# 作业硬上限 360 分钟，这里把编译步骤卡在 300 分钟，保证超时也能存下缓存和日志。
+###############################################################################
+name: Build OpenWrt x86_64
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'OpenWrt 源码 ref（tag 或分支），留空用 v25.12.6'
+        required: false
+        default: ''
+      jobs:
+        description: '编译并行度，留空按 CPU 核心数'
+        required: false
+        default: ''
+
+  schedule:
+    - cron: '0 18 * * 5'
+
+  push:
+    branches:
+      - main
+    paths:
+      - 'build-openwrt.sh'
+      - 'config/**'
+      - 'files/**'
+      - 'feeds.conf'
+      - '.github/workflows/build.yml'
+    tags:
+      - 'fw-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: openwrt-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # GitHub 自己会设置 CI=true，脚本里用的是 CI_MODE，别混淆
+  CI_MODE: '1'
+  # 和 10GB 池的分配：ccache 3G x2 份 + dl 2G ≈ 8G
+  CCACHE_MAXSIZE: 3G
+  # actions/cache 的条目不可变，改这个值可以强制重建 dl 缓存
+  DL_CACHE_EPOCH: v1
+
+jobs:
+  # 先花十几秒挡住语法错误，别为了一个错别字烧掉三小时机时
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查构建脚本
+        run: |
+          bash -n build-openwrt.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -S error build-openwrt.sh
+
+      - name: 检查配置文件
+        run: |
+          set -euo pipefail
+          # .config 里同一个符号出现两次时，kconfig 只认最后一次，是静默踩坑的重灾区
+          dupes="$(grep -oE '^#? ?CONFIG_[A-Za-z0-9_]+' config/openwrt.config \
+                   | sed 's/^#* //' | sort | uniq -d || true)"
+          if [ -n "$dupes" ]; then
+            echo "::error::config/openwrt.config 里有重复符号：$dupes"
+            exit 1
+          fi
+          python3 -c "import json,sys;[json.load(open(p)) for p in sys.argv[1:]]" \
+            files/usr/share/luci/menu.d/luci-app-firewall-custom.json \
+            files/usr/share/rpcd/acl.d/luci-app-firewall-custom.json
+          echo "配置文件检查通过"
+
+  build:
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 计算版本标识
+        id: meta
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          echo "ref=${INPUT_REF:-v25.12.6}" >>"$GITHUB_OUTPUT"
+          echo "stamp=$(date -u +%Y.%m.%d)" >>"$GITHUB_OUTPUT"
+
+      # 标准 runner 的根分区只有 70GB 左右，预装的一堆 SDK 一次都用不上
+      - name: 释放磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+                      /usr/share/swift /opt/az /usr/lib/jvm /usr/local/.ghcup
+          sudo apt-get clean
+          df -h /
+
+      - name: 恢复 dl 源码包缓存
+        id: cache-dl
+        uses: actions/cache/restore@v4
+        with:
+          path: work/openwrt/dl
+          key: openwrt-dl-${{ runner.os }}-${{ env.DL_CACHE_EPOCH }}
+          restore-keys: |
+            openwrt-dl-${{ runner.os }}-
+
+      - name: 恢复 ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: work/openwrt/.ccache
+          # run_attempt 必须带上：Re-run 时 run_id 不变，只用 run_id 会撞「key 已存在」
+          key: openwrt-ccache-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            openwrt-ccache-${{ runner.os }}-
+
+      # 步骤级超时是关键：作业级超时会让 GitHub 直接取消整个作业，
+      # 后面的存缓存、传日志一个都不执行，几小时攒的 ccache 全丢。
+      - name: 构建固件
+        timeout-minutes: 300
+        env:
+          OPENWRT_REF: ${{ steps.meta.outputs.ref }}
+          JOBS: ${{ inputs.jobs }}
+        run: ./build-openwrt.sh
+
+      - name: 停止残留编译进程并检查缓存目录
+        if: always()
+        id: guard
+        run: |
+          set -uo pipefail
+          # 超时杀掉的是 shell，make 的子进程可能还在写 .ccache，
+          # 紧接着上传缓存就会撞上 "file changed as we read it" 直接失败。
+          pkill -f "$GITHUB_WORKSPACE/work/openwrt" 2>/dev/null || true
+          for _ in 1 2 3 4 5; do
+            pgrep -f "$GITHUB_WORKSPACE/work/openwrt" >/dev/null 2>&1 || break
+            sleep 2
+          done
+
+          mkdir -p work/openwrt/.ccache
+
+          if [ -f work/openwrt/.dl-complete ] && [ -n "$(ls -A work/openwrt/dl 2>/dev/null)" ]; then
+            echo "dl_ok=true" >>"$GITHUB_OUTPUT"
+            du -sh work/openwrt/dl || true
+          else
+            echo "dl_ok=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::dl/ 不完整（缺 .dl-complete），跳过保存，避免毒化固定 key"
+          fi
+
+          if [ -n "$(ls -A work/openwrt/.ccache 2>/dev/null)" ]; then
+            echo "ccache_ok=true" >>"$GITHUB_OUTPUT"
+            du -sh work/openwrt/.ccache || true
+          else
+            echo "ccache_ok=false" >>"$GITHUB_OUTPUT"
+            echo "::warning::ccache 目录是空的，CONFIG_CCACHE 没生效"
+          fi
+
+      - name: 保存 dl 源码包缓存
+        if: always() && steps.guard.outputs.dl_ok == 'true' && steps.cache-dl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: work/openwrt/dl
+          key: openwrt-dl-${{ runner.os }}-${{ env.DL_CACHE_EPOCH }}
+
+      - name: 保存 ccache
+        if: always() && steps.guard.outputs.ccache_ok == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: work/openwrt/.ccache
+          key: openwrt-ccache-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-x86-64-${{ steps.meta.outputs.stamp }}
+          path: |
+            output/*.img.gz
+            output/*rootfs.tar.gz
+            output/sha256sums
+            output/*.manifest
+            output/config.full
+            output/config.diff
+            output/feeds.lock
+            output/build-info.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: 上传编译日志（失败时）
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ steps.meta.outputs.stamp }}-${{ github.run_attempt }}
+          path: work/build-logs/*.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 写入构建摘要
+        if: always()
+        run: |
+          {
+            echo "## OpenWrt x86_64 构建结果"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 源码 ref | \`${{ steps.meta.outputs.ref }}\` |"
+            echo "| 提交 | \`$(git -C work/openwrt rev-parse --short HEAD 2>/dev/null || echo n/a)\` |"
+            echo "| 并行度 | \`${{ inputs.jobs || 'auto' }}\` |"
+            echo "| dl 缓存 | ${{ steps.guard.outputs.dl_ok || 'n/a' }} |"
+            echo "| ccache | ${{ steps.guard.outputs.ccache_ok || 'n/a' }} |"
+            echo ""
+            if [ -f output/build-info.txt ]; then
+              echo '```'
+              cat output/build-info.txt
+              echo '```'
+            fi
+            if [ -f output/sha256sums ]; then
+              echo ""
+              echo '```'
+              cat output/sha256sums
+              echo '```'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/fw-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            output/*.img.gz
+            output/*rootfs.tar.gz
+            output/sha256sums
+            output/*.manifest
+            output/build-info.txt
+            output/config.full
+          generate_release_notes: true

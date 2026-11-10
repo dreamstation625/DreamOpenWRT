@@ -1,0 +1,6 @@
+# 这个仓库面向 Linux 构建机，统一 LF，避免 Windows 上编辑后脚本在 Actions 里
+# 出现 "bad interpreter: /usr/bin/env bash^M"。
+* text=auto eol=lf
+*.sh text eol=lf
+*.nft text eol=lf
+*.js text eol=lf

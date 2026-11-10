@@ -1,0 +1,70 @@
+#!/bin/sh
+#
+# 首次启动时执行一次，执行完 OpenWrt 会自动把它从 /etc/uci-defaults 移除。
+# 所以 sysupgrade 保留配置升级后它不会再跑，不会覆盖你后来改过的设置。
+#
+# 要改默认值就改这个文件；改完重新构建即可，下次全新刷机生效。
+
+# ---- root 密码 ----
+# openssl-util 已包含在固件里；拿不到就保持空密码，宁可报出来也别悄悄写个坏 hash
+if command -v openssl >/dev/null 2>&1; then
+	PASSWD="$(openssl passwd -1 'root')"
+	if [ -n "$PASSWD" ]; then
+		sed -i "s#^root::#root:${PASSWD}:#" /etc/shadow
+	fi
+fi
+
+# ---- 系统基本项 ----
+uci -q set system.@system[0].hostname='OpenWrt'
+uci -q set system.@system[0].zonename='Asia/Shanghai'
+uci -q set system.@system[0].timezone='CST-8'
+uci -q commit system
+
+# ---- LuCI ----
+uci -q set luci.main.mediaurlbase='/luci-static/argon'
+uci -q set luci.main.lang='zh-cn'
+uci -q set luci.main.lang_auto='0'
+uci -q commit luci
+
+# ---- 只开放 HTTP 80 ----
+# 自签证书只会让浏览器天天报警；要 HTTPS 请自己在 LuCI 里配好证书再开。
+if [ -f /etc/config/nginx ]; then
+	uci -q delete nginx._lan.redirect_https
+	uci -q delete nginx._lan.listen_https
+	uci -q delete nginx._lan.ssl_certificate
+	uci -q delete nginx._lan.ssl_certificate_key
+	uci -q delete nginx._lan2
+	uci -q delete nginx._lan.listen
+	uci -q add_list nginx._lan.listen='0.0.0.0:80'
+	uci -q add_list nginx._lan.listen='[::]:80'
+	uci -q commit nginx
+fi
+
+if [ -f /etc/config/uhttpd ]; then
+	uci -q delete uhttpd.main.redirect_https
+	uci -q delete uhttpd.main.listen_https
+	uci -q delete uhttpd.main.cert
+	uci -q delete uhttpd.main.key
+	uci -q commit uhttpd
+fi
+
+# ---- 清掉三方 feed 的软件源 ----
+# 这些包已经编进固件，但上游没有对应的 apk 仓库。留着会让 apk update 一直 404。
+if [ -f /etc/apk/repositories.d/distfeeds.list ]; then
+	sed -i \
+		-e '/\/openclash\/packages\.adb$/d' \
+		-e '/\/dockerman\/packages\.adb$/d' \
+		-e '/\/diskman\/packages\.adb$/d' \
+		-e '/\/advancedplus\/packages\.adb$/d' \
+		-e '/\/syscontrol\/packages\.adb$/d' \
+		-e '/\/mosdns\/packages\.adb$/d' \
+		/etc/apk/repositories.d/distfeeds.list
+fi
+
+rm -rf /tmp/luci-*
+
+for svc in nginx uhttpd dockerd AdGuardHome adguardhome mosdns; do
+	[ -x "/etc/init.d/$svc" ] && /etc/init.d/$svc enable >/dev/null 2>&1
+done
+
+exit 0
