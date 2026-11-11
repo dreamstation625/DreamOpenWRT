@@ -165,7 +165,9 @@ jobs:
           INPUT_REF: ${{ inputs.ref }}
         run: |
           echo "ref=${INPUT_REF:-v25.12.6}" >>"$GITHUB_OUTPUT"
-          echo "stamp=$(date -u +%Y.%m.%d)" >>"$GITHUB_OUTPUT"
+          # runner 是 UTC，按北京时间取日期，否则 08:00 前的构建会标成前一天。
+          # 用 POSIX 的 CST-8 而不是 Asia/Shanghai：前者不依赖 tzdata，本地也能验证。
+          echo "stamp=$(TZ=CST-8 date +%Y.%m.%d)" >>"$GITHUB_OUTPUT"
 
       # 标准 runner 的根分区只有 70GB 左右，预装的一堆 SDK 一次都用不上
       - name: 释放磁盘空间
@@ -251,7 +253,7 @@ jobs:
       - name: 上传固件
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-x86-64-${{ steps.meta.outputs.stamp }}
+          name: openwrt-x86-64-${{ steps.meta.outputs.stamp }}-r${{ github.run_number }}.${{ github.run_attempt }}
           path: |
             output/*.img.gz
             output/*rootfs.tar.gz
@@ -268,7 +270,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ steps.meta.outputs.stamp }}-${{ github.run_attempt }}
+          name: build-logs-${{ steps.meta.outputs.stamp }}-r${{ github.run_number }}.${{ github.run_attempt }}
           path: work/build-logs/*.log
           retention-days: 7
           if-no-files-found: warn
@@ -300,18 +302,57 @@ jobs:
             fi
           } >>"$GITHUB_STEP_SUMMARY"
 
-      - name: 发布 Release
-        if: startsWith(github.ref, 'refs/tags/fw-v')
+      # 日常构建（push main / 手动触发 / 定时）成功后，按构建日期更新当天的快照 Release。
+      # tag 用 snapshot-<日期>：同一天多次构建覆盖同名产物，跨天则各留一份。
+      # 产物名由 OpenWrt 生成、不含 commit，所以同一天重复构建不会堆出重复文件。
+      # ref_type != 'tag' 用表达式而不是 !startsWith(...)：YAML 里裸 `!` 开头会被当成 tag 解析。
+      - name: 发布滚动快照 Release
+        if: success() && github.ref_type != 'tag'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: snapshot-${{ steps.meta.outputs.stamp }}
+          name: 构建快照 ${{ steps.meta.outputs.stamp }}
+          prerelease: true
+          # 默认就是 true，显式写出来：同一天重复构建时同名产物要被替换而不是报 already_exists
+          overwrite_files: true
+          body: |
+            > 同一天的多次成功构建会覆盖这里，产物始终是当天最后一次成功构建的结果。
+            > 需要固定版本、可长期回滚请打 `fw-v*` tag 发正式 Release。
+
+            | 项 | 值 |
+            | --- | --- |
+            | 构建日期 | ${{ steps.meta.outputs.stamp }}（北京时间） |
+            | OpenWrt 源码 | `${{ steps.meta.outputs.ref }}` |
+            | 构建提交 | `${{ github.sha }}` |
+            | 运行记录 | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+
+            刷机选 `*-combined-efi.img.gz`（UEFI 启动，Hyper-V 用第 2 代 + 关安全启动）；
+            `*-combined.img.gz` 是传统 BIOS 引导。版本号与哈希见 `build-info.txt`、`sha256sums`。
           files: |
             output/*.img.gz
             output/*rootfs.tar.gz
             output/sha256sums
             output/*.manifest
-            output/build-info.txt
             output/config.full
+            output/config.diff
+            output/feeds.lock
+            output/build-info.txt
+
+      # 打 fw-v* tag 时发正式 Release，自动生成变更说明。
+      - name: 发布正式 Release
+        if: startsWith(github.ref, 'refs/tags/fw-v')
+        uses: softprops/action-gh-release@v2
+        with:
           generate_release_notes: true
+          files: |
+            output/*.img.gz
+            output/*rootfs.tar.gz
+            output/sha256sums
+            output/*.manifest
+            output/config.full
+            output/config.diff
+            output/feeds.lock
+            output/build-info.txt
 
       # 构建完再清一次：前面那一轮清的时候本次运行还是 in_progress、不在可删列表里，
       # 现在它已经算「已完成」了，再删一轮才能把总数压回 8 条。

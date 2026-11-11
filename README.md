@@ -83,8 +83,22 @@ SKIP_DEPS=1 ./build-openwrt.sh        # 已装好依赖，跳过 apt
 - 手动 `Run workflow`，可填源码 ref / 并行度
 - 推 `main` 且改到 `build-openwrt.sh`、`config/`、`files/`、`feeds.conf` 时触发
 - 每周六 02:00（CST）定时重建，跟随 25.12 分支的安全更新
-- 打 `fw-v*` tag，构建完自动发 Release
 - 每次构建前后各清一次 Actions 运行记录，只保留最近 8 条（`scripts/cleanup-runs.sh`，只删已完成的，正在跑的跳过）
+
+### 固件发布在哪
+
+构建成功后会自动发 Release，分两条线：
+
+| 触发方式 | Release | 说明 |
+| --- | --- | --- |
+| push `main` / 手动 / 定时 | **构建快照**，tag 是 `snapshot-<日期>`，标记为 Pre-release | 同一天的多次成功构建**覆盖同一份**，产物始终是当天最后一次成功的结果；跨天则各留一份 |
+| 打 `fw-v*` tag | **正式 Release**，自动生成变更说明 | 想留一个长期可回滚的版本就打个 tag，例如 `git tag fw-v25.12.6-1 && git push origin fw-v25.12.6-1` |
+
+两条线都附带 `*.img.gz`、`rootfs.tar.gz`、`sha256sums`、`*.manifest`、`config.full`、`config.diff`、`feeds.lock`、`build-info.txt`。需要复现或对比时看后四个。
+
+日期取的是**北京时间**（runner 是 UTC，直接用会在 08:00 前算成前一天）。
+
+快照的 tag 停在当天第一次创建它的提交上，**以 Release 说明里的「构建提交」为准**——那里写的是当次实际源码提交。
 
 ## 在 Hyper-V 里用
 
