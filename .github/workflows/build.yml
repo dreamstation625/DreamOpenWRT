@@ -145,7 +145,8 @@ jobs:
       - name: 检查 overlay 脚本语法
         run: |
           set -euo pipefail
-          for f in files/etc/uci-defaults/*; do
+          for f in files/etc/uci-defaults/* files/etc/init.d/* \
+                   files/usr/sbin/* files/lib/upgrade/*.sh; do
             [ -f "$f" ] || continue
             sh -n "$f"
             echo "sh -n 通过: $f"

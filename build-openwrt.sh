@@ -266,6 +266,21 @@ sync_overlay() {
     mkdir -p "$SRC/files"
     cp -a "$SCRIPT_DIR/files/." "$SRC/files/"
   fi
+
+  # 仓库在 Windows 上开发时 NTFS 不保存可执行位，git 可能把这些文件记成
+  # 100644。init.d / usr/sbin / uci-defaults 少了 +x 就等于没装，且失败是静默的。
+  # 不依赖工作区的文件模式，进源码树后统一补一次。
+  # 注意这里必须用 if 而不是 `[ -f ] && chmod`：glob 没匹配时会留下字面量
+  # 带 * 的路径，&& 短路返回 1，在 set -e 下会直接把整个构建打断。
+  for f in \
+    "$SRC/files/etc/uci-defaults/"* \
+    "$SRC/files/etc/init.d/"* \
+    "$SRC/files/usr/sbin/"*; do
+    if [ -f "$f" ]; then
+      chmod 0755 "$f"
+    fi
+  done
+
   ok "$(find "$SCRIPT_DIR/files" -type f | wc -l) 个文件写入 files/"
 }
 

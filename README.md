@@ -19,7 +19,7 @@ files/                    写进固件的默认配置（overlay，会被拷到�
 | 上游 | `openwrt/openwrt` @ `v25.12.6`（可用 `OPENWRT_REF` 覆盖） |
 | 目标 | x86/64 generic，SquashFS + GRUB + EFI，`rootfs` 分区 4096MB |
 | 产物 | `*-combined.img.gz`、`*-combined-efi.img.gz`、`*-rootfs.tar.gz`、manifest、sha256sums |
-| 后台 | `https://192.168.31.254`（80 自动跳 https；自签证书由 uhttpd 首次启动时用 px5g 生成，浏览器会报一次警告） |
+| 后台 | `https://192.168.31.253`（80 自动跳 https；自签证书由 uhttpd 首次启动时用 px5g 生成，浏览器会报一次警告） |
 | root 密码 | `root` |
 | 时区 / 语言 | `Asia/Shanghai` / 简体中文 |
 | 主题 | Argon |
@@ -125,12 +125,53 @@ Hyper-V 相关的驱动（`hv_storvsc`、`hv_netvsc`、`hv_balloon`、`hv_utils`
 
 ## 升级
 
-x86 的 `*-combined-efi.img.gz` 本身就是 sysupgrade 镜像，直接在 LuCI 的「系统 → 备份/升级 → 刷写新固件」里上传即可，勾选保留配置就不会丢设置。
+x86 的 `*-combined-efi.img.gz` 本身就是 sysupgrade 镜像，直接在 LuCI 的「系统 → 备份/升级 → 刷写新固件」里上传即可，**必须勾选保留配置**。
 
-为了让升级不丢东西，本仓库做了两件事：
+为了让升级不丢东西，本仓库做了这些事：
 
 - `CONFIG_TARGET_ROOTFS_PARTSIZE` 固定 4096。改这个值会导致已有机器无法原地升级。
-- `files/etc/uci-defaults/99-default-settings` 只在首次启动执行一次，升级后不会重跑，不会覆盖你后来改过的设置。
+- `files/etc/sysupgrade.conf` 列出不在任何包 conffiles 里的东西：`/etc/firewall.user`、AdGuardHome 主配置 `/etc/AdGuardHome.yaml`、后装包清单。`/etc/config/` 整个目录由 `keep.d/base-files` 无条件保留，不用逐个列。
+- `files/etc/uci-defaults/99-default-settings` **每次升级后都会重跑**（它是新固件 rootfs 自带文件，而 `/etc/uci-defaults/` 不在备份清单里）。所以里面所有 uci 写入都只在值不存在时执行，不会覆盖你改过的 hostname、语言、主题、HTTP 跳转。
+- 用户自己 `apk add` 装的包会自动重装，见下一节。
+
+⚠ **别往 `sysupgrade.conf` 里加整个数据目录**。x86 的 `platform_copy_config` 把 `sysupgrade.tgz` 拷到 **16MB 的 boot 分区**，备份包一大就写不下，整包配置全丢。AdGuardHome 的 `data/`（过滤缓存、统计库）、OpenClash 的 `core/` 内核都属于这类，升级后重建即可。
+
+### 后装的软件包
+
+x86 升级会覆写整个 rootfs 分区，固件里没编进去的包本来是**一定会消失**的。LuCI 网页升级也不带上游的 `sysupgrade -k`（那货只记清单、不重装）。所以这里自己做了一套：
+
+| 阶段 | 做什么 |
+|---|---|
+| 升级时 | `files/lib/upgrade/dream-extra-packages.sh` 钩住 `sysupgrade_init_conffiles`，调用 `/usr/sbin/dream-pkg-list` 现场扫描 `/rom` 之外的包，写进 `/etc/dream-extra-packages` 并塞进备份 |
+| 升级后首次启动 | `files/etc/uci-defaults/99-dream-extra-packages` 启用并触发 `files/etc/init.d/dream-restore-packages` |
+| 重装 | 等 `apk update` 可用（最多 10 分钟），逐个 `apk add`，全部成功后删清单；失败则保留清单，下次开机重试 |
+
+想看结果：`logread | grep dream-restore` 和 `logread | grep dream-pkg-list`。
+
+**三条硬限制，做不到 100% 保证**：
+
+1. 只能装回**官方 apk 源里还存在**的包。三方 feed 的包（源码编进固件的那些）上游压根没有 apk 仓库，装不回来——但它们本来就在固件里，不需要重装。
+2. **kmod 装不回来**。自编译内核的 vermagic 与官方 kmod 不匹配，这也是「已知限制」里不让从官方源装 kmod 的原因。
+3. 需要升级后能联网。旁路由的 DNS 可能要等 mosdns / AdGuardHome 起来，脚本已内置等待和重试。
+
+**真要保证一个包不丢，就把它加进 `config/openwrt.config` 编进固件**，那是唯一不依赖网络、不依赖源的方案。
+
+**从没有这套钩子的老固件升级过来时**（一次性过渡，老固件里还没有上面这些脚本），升级前在老机器上执行：
+
+```sh
+# 1. 导出现在自己装的包
+for f in /lib/apk/packages/*.list; do
+  n=${f##*/}; n=${n%.list}
+  [ -f "/rom/lib/apk/packages/$n.list" ] || echo "$n"
+done > /etc/dream-extra-packages
+# 2. 让备份带上清单，并预先打上「已初始化」标记，避免升级后默认值脚本
+#    误判成全新刷机、把改过的主题/语言写回去
+echo /etc/dream-extra-packages >> /etc/sysupgrade.conf
+: > /etc/.dream-defaults-applied
+echo /etc/.dream-defaults-applied >> /etc/sysupgrade.conf
+```
+
+只影响这一次；之后每次升级，钩子和标记都会随固件自带，不用再管。
 
 `/etc/dreamopenwrt-version` **有意不进保留列表**：升级后被新固件覆盖才是对的，这样它始终反映当前跑的是哪个版本。
 

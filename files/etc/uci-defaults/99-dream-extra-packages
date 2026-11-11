@@ -1,0 +1,20 @@
+#!/bin/sh
+#
+# 每次 sysupgrade 保留配置升级完成后，这段会随 /etc/uci-defaults/ 一起重跑
+# （它是新固件 rootfs 自带的文件，不在任何备份清单里）。
+#
+# 两件事：
+#   1. 启用 dream-restore-packages，让某次重装失败后下次开机还能重试；
+#   2. 如果备份里带回了「后装包清单」，立刻触发一次重装，不等下次开机。
+#
+# 全新刷机时清单不存在，第 2 步是空操作。
+
+if [ -x /etc/init.d/dream-restore-packages ]; then
+	/etc/init.d/dream-restore-packages enable >/dev/null 2>&1
+fi
+
+if [ -s /etc/dream-extra-packages ]; then
+	/etc/init.d/dream-restore-packages start
+fi
+
+exit 0

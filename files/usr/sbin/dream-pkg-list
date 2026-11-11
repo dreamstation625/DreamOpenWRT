@@ -1,0 +1,38 @@
+#!/bin/sh
+#
+# 生成「固件之外、用户自己 apk add 装上的包」清单。
+#
+# 判断依据：/rom 是 squashfs 只读层，里面存在 .list 的就是固件自带包；
+# 只在 overlay 里能看到的才是后装包。和上游 sysupgrade -k 的 rom/overlay
+# 标记用的是同一个对比。
+#
+# 输出：/etc/dream-extra-packages，每行一个包名。
+# 供 sysupgrade 备份（/lib/upgrade/dream-extra-packages.sh）和
+# 升级后重装（/etc/init.d/dream-restore-packages）使用。
+# 也可以在老固件上手动跑一次，给首次过渡升级兜底。
+
+set -eu
+
+LIST=/etc/dream-extra-packages
+ROM=/rom/lib/apk/packages
+CUR=/lib/apk/packages
+
+if [ ! -d "$ROM" ]; then
+	# 没有 /rom 就没法区分，留空清单，宁可不重装也别把固件自带的
+	# 几百个包全列进去（会把 apk 源拖垮）。
+	: > "$LIST"
+	logger -t dream-pkg-list "找不到 $ROM，清单留空"
+	exit 0
+fi
+
+: > "$LIST"
+for f in "$CUR"/*.list; do
+	[ -f "$f" ] || continue
+	name="${f##*/}"
+	name="${name%.list}"
+	[ -f "$ROM/$name.list" ] && continue
+	echo "$name" >> "$LIST"
+done
+
+count=$(wc -l < "$LIST")
+logger -t dream-pkg-list "记录 $count 个后装软件包到 $LIST"

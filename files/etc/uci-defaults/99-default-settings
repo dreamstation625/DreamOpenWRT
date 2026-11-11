@@ -1,7 +1,13 @@
 #!/bin/sh
 #
-# 首次启动时执行一次，执行完 OpenWrt 会自动把它从 /etc/uci-defaults 移除。
-# 所以 sysupgrade 保留配置升级后它不会再跑，不会覆盖你后来改过的设置。
+# 默认值。注意：这段脚本【每次 sysupgrade 保留配置升级后都会重跑】——
+# 它是新固件 rootfs 自带的文件，而 /etc/uci-defaults/ 不在任何备份清单里，
+# 升级后目录被重建，脚本就又出现了。boot 执行完会把它删掉，下次升级又回来。
+# 所以默认值写入按 MARK 分成两种模式：全新刷机强制写，升级后只补空值，
+# 绝不覆盖用户后来改过的设置。
+#
+# 其余几段（root 密码只匹配空密码、firewall include 有存在性判断、sed 删源
+# 是幂等的）本身就是可重复执行的。
 #
 # 要改默认值就改这个文件；改完重新构建即可，下次全新刷机生效。
 
@@ -14,25 +20,43 @@ if command -v openssl >/dev/null 2>&1; then
 	fi
 fi
 
+# 区分「全新刷机」和「升级后重跑」，标记文件已列进 /etc/sysupgrade.conf。
+#  - 全新刷机：无条件写仓库默认值，否则 luci-base 自带的 bootstrap / auto
+#    会盖掉我们要的 Argon 中文；
+#  - 升级后：/etc/config/ 整目录从备份恢复，用户改过的 hostname / 语言 /
+#    主题都在，只在值为空时才补，绝不覆盖。
+MARK=/etc/.dream-defaults-applied
+if [ -f "$MARK" ]; then
+	MODE=keep
+else
+	MODE=force
+fi
+
+set_default() {
+	local section="$1" key="$2" value="$3" file="$4"
+	if [ "$MODE" = keep ] && [ -n "$(uci -q get "${section}.${key}" 2>/dev/null)" ]; then
+		return 0
+	fi
+	uci -q set "${section}.${key}=${value}"
+	uci -q commit "$file"
+}
+
 # ---- 系统基本项 ----
-uci -q set system.@system[0].hostname='OpenWrt'
-uci -q set system.@system[0].zonename='Asia/Shanghai'
-uci -q set system.@system[0].timezone='CST-8'
-uci -q commit system
+set_default 'system.@system[0]' hostname 'OpenWrt' system
+set_default 'system.@system[0]' zonename 'Asia/Shanghai' system
+set_default 'system.@system[0]' timezone 'CST-8' system
 
 # ---- LuCI ----
-uci -q set luci.main.mediaurlbase='/luci-static/argon'
-uci -q set luci.main.lang='zh-cn'
-uci -q set luci.main.lang_auto='0'
-uci -q commit luci
+set_default luci.main mediaurlbase '/luci-static/argon' luci
+set_default luci.main lang 'zh-cn' luci
+set_default luci.main lang_auto '0' luci
 
 # ---- Web 服务：保持官方默认 ----
 # 官方 25.12 的 /etc/config/uhttpd 默认就监听 80 和 443，证书由 uhttpd 启动时
 # 调 px5g 自动生成（luci-ssl 会带 px5g-mbedtls）。这里不再删 443、也不强制只留 80，
 # 只把 HTTP 自动跳转打开，避免明文访问后台。
 if [ -f /etc/config/uhttpd ]; then
-	uci -q set uhttpd.main.redirect_https='1'
-	uci -q commit uhttpd
+	set_default uhttpd.main redirect_https '1' uhttpd
 fi
 
 # ---- 让 LuCI「防火墙 → 自定义规则」页面真正生效 ----
@@ -65,5 +89,8 @@ rm -rf /tmp/luci-*
 for svc in uhttpd AdGuardHome adguardhome mosdns; do
 	[ -x "/etc/init.d/$svc" ] && /etc/init.d/$svc enable >/dev/null 2>&1
 done
+
+# 标记只在这里创建。升级后它随备份回来，MODE 才是 keep。
+: > "$MARK"
 
 exit 0

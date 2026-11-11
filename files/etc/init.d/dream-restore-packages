@@ -1,0 +1,61 @@
+#!/bin/sh /etc/rc.common
+#
+# 升级后自动重装用户自己 apk add 装的软件包。
+#
+# 清单 /etc/dream-extra-packages 由 sysupgrade 备份带过来，见
+# files/lib/upgrade/dream-extra-packages.sh。x86 升级会覆写整个 rootfs 分区，
+# 后装的包本来是一定会消失的，这里靠重装补回来。
+#
+# 注意：只能重装官方 apk 源里还存在的包。三方 feed 的包（源码编进固件，
+# 上游没有对应 apk 仓库）和自编译内核的 kmod 都装不回来，失败原因写进 syslog。
+# 想 100% 不丢，就把包加进 config/openwrt.config 编进固件。
+
+START=99
+
+LIST=/etc/dream-extra-packages
+LOCK=/tmp/dream-restore-packages.lock
+
+start() {
+	[ -s "$LIST" ] || return 0
+	mkdir "$LOCK" 2>/dev/null || return 0
+
+	(
+		# 这个后台任务由 uci-defaults 的 source 子 shell 拉起，父 shell 退出时
+		# 会收到 HUP；忽略它，否则等网络的 10 分钟会半途夭折。
+		trap '' HUP
+		trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
+		ok=0
+		i=0
+		failed=""
+
+		# 等 apk 源可用：升级后旁路由的 DNS 可能要等 mosdns / AdGuardHome 起来，
+		# 刚开机就 apk add 会全军覆没。最多等 10 分钟。
+		while [ "$i" -lt 20 ]; do
+			if apk update >/dev/null 2>&1; then ok=1; break; fi
+			i=$((i + 1))
+			sleep 30
+		done
+		if [ "$ok" -ne 1 ]; then
+			logger -t dream-restore "apk update 一直失败，清单保留在 $LIST，下次开机重试"
+			exit 1
+		fi
+
+		while read -r pkg; do
+			case "$pkg" in ''|\#*) continue ;; esac
+			# 直接查 .list，和 dream-pkg-list 用的是同一份元数据，
+			# 不依赖 apk info 各版本间有差异的参数。
+			[ -f "/lib/apk/packages/$pkg.list" ] && continue
+			if ! apk add "$pkg" </dev/null >/dev/null 2>&1; then
+				failed="$failed $pkg"
+			fi
+		done < "$LIST"
+
+		if [ -n "$failed" ]; then
+			logger -t dream-restore "以下包未能恢复:$failed（清单保留，下次开机重试）"
+			exit 1
+		fi
+
+		rm -f "$LIST"
+		logger -t dream-restore "后装软件包已全部恢复"
+	) >/dev/null 2>&1 &
+}
