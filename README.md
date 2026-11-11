@@ -85,20 +85,25 @@ SKIP_DEPS=1 ./build-openwrt.sh        # 已装好依赖，跳过 apt
 - 每周六 02:00（CST）定时重建，跟随 25.12 分支的安全更新
 - 每次构建前后各清一次 Actions 运行记录，只保留最近 8 条（`scripts/cleanup-runs.sh`，只删已完成的，正在跑的跳过）
 
+### 构建版本号
+
+每次构建都有一个版本号，格式是 **`年月日.当天第几次`**，例如 `2026.11.11.3` 表示 11 月 11 日的第 3 次成功构建。
+
+- **怎么算的**：数远端已有的 `snapshot-<同一个日期>.<N>` tag，取最大 N 加一。所以只有**真正发出版本**的构建才占号，失败或在发版前挂掉的不会把号吃掉
+- **日期是北京时间的**：runner 是 UTC，直接用会在 08:00 前算成前一天
+- **系统里能查到**：版本号会写进固件的 `/etc/dreamopenwrt-version`，刷完执行 `cat /etc/dreamopenwrt-version` 就知道这机器上是哪一次构建
+- 本地直接跑脚本时没有 CI 算的号，会用 `local-<日期时间>` 兜底
+
 ### 固件发布在哪
 
 构建成功后会自动发 Release，分两条线：
 
 | 触发方式 | Release | 说明 |
 | --- | --- | --- |
-| push `main` / 手动 / 定时 | **构建快照**，tag 是 `snapshot-<日期>`，标记为 Pre-release | 同一天的多次成功构建**覆盖同一份**，产物始终是当天最后一次成功的结果；跨天则各留一份 |
-| 打 `fw-v*` tag | **正式 Release**，自动生成变更说明 | 想留一个长期可回滚的版本就打个 tag，例如 `git tag fw-v25.12.6-1 && git push origin fw-v25.12.6-1` |
+| push `main` / 手动 / 定时 | **构建快照**，tag 是 `snapshot-<版本号>`，标记为 Pre-release | 每次成功构建各留一份，历史版本都能下载 |
+| 打 `fw-v*` tag | **正式 Release**，自动生成变更说明 | 想留一个长期回滚的版本就打个 tag，例如 `git tag fw-v25.12.6-1 && git push origin fw-v25.12.6-1` |
 
 两条线都附带 `*.img.gz`、`rootfs.tar.gz`、`sha256sums`、`*.manifest`、`config.full`、`config.diff`、`feeds.lock`、`build-info.txt`。需要复现或对比时看后四个。
-
-日期取的是**北京时间**（runner 是 UTC，直接用会在 08:00 前算成前一天）。
-
-快照的 tag 停在当天第一次创建它的提交上，**以 Release 说明里的「构建提交」为准**——那里写的是当次实际源码提交。
 
 ## 在 Hyper-V 里用
 
@@ -126,6 +131,8 @@ x86 的 `*-combined-efi.img.gz` 本身就是 sysupgrade 镜像，直接在 LuCI 
 
 - `CONFIG_TARGET_ROOTFS_PARTSIZE` 固定 4096。改这个值会导致已有机器无法原地升级。
 - `files/etc/uci-defaults/99-default-settings` 只在首次启动执行一次，升级后不会重跑，不会覆盖你后来改过的设置。
+
+`/etc/dreamopenwrt-version` **有意不进保留列表**：升级后被新固件覆盖才是对的，这样它始终反映当前跑的是哪个版本。
 
 ### 自定义防火墙规则
 

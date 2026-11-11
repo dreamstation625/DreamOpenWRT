@@ -41,6 +41,11 @@ START_TS="$(date +%s)"
 COMMIT=""
 BUILD_LOG=""
 
+# 构建版本号，形如 2026.11.11.3（日期 + 当天第几次构建）。
+# CI 里由 workflow 数当天已有的 snapshot-* tag 算出来再传进来；本地直接跑时留空，
+# 由 write_version_info 生成 local- 前缀的标识。它会写进固件的 /etc/dreamopenwrt-version。
+BUILD_VERSION="${BUILD_VERSION:-}"
+
 # 嵌进固件的 AdGuardHome 二进制：直接用官方 release，不走源码编译。
 # packages feed 里那个 adguardhome 要从 Go 源码编，还要先编 golang 工具链，
 # 2 核上单这一项就要 20~40 分钟；而官方 tar 是 CGO 静态链接的，在 musl 上直接能跑。
@@ -317,6 +322,31 @@ embed_adguardhome() {
 }
 
 ###############################################################################
+# 把构建版本写进固件
+###############################################################################
+
+# 刷完 `cat /etc/dreamopenwrt-version` 就能知道这机器上是哪一次构建，
+# 不用去翻 Actions 记录。必须在 sync_overlay 之后写，否则会被 rsync --delete 清掉。
+write_version_info() {
+  section "写入构建版本"
+  # 本地直接跑脚本时没有 CI 算好的号，用时间戳兜底，避免把空值写进固件
+  if [ -z "$BUILD_VERSION" ]; then
+    BUILD_VERSION="local-$(TZ=CST-8 date +%Y.%m.%d.%H%M)"
+    info "未指定 BUILD_VERSION，本地构建用 $BUILD_VERSION"
+  fi
+
+  local dir="$SRC/files/etc"
+  mkdir -p "$dir"
+  {
+    echo "VERSION=$BUILD_VERSION"
+    echo "OPENWRT_REF=$OPENWRT_REF"
+    echo "OPENWRT_COMMIT=${COMMIT:-unknown}"
+    echo "BUILD_TIME=$(date -Iseconds)"
+  } >"$dir/dreamopenwrt-version"
+  ok "$BUILD_VERSION 已写入 /etc/dreamopenwrt-version"
+}
+
+###############################################################################
 # .config
 ###############################################################################
 
@@ -479,6 +509,7 @@ collect_artifacts() {
   cp -f "$SCRIPT_DIR/feeds.conf" "$OUTPUT_DIR/feeds.lock"
 
   {
+    echo "BUILD_VERSION=$BUILD_VERSION"
     echo "OPENWRT_REPO=$OPENWRT_REPO"
     echo "OPENWRT_REF=$OPENWRT_REF"
     echo "OPENWRT_COMMIT=$COMMIT"
@@ -530,6 +561,7 @@ update_pins() {
 
 summary() {
   section "完成"
+  info "版本：$BUILD_VERSION"
   info "耗时：$(fmt_dur $(($(date +%s) - START_TS)))"
   info "源码：$OPENWRT_REF @ ${COMMIT:0:12}"
   info "产物：$OUTPUT_DIR"
@@ -549,6 +581,8 @@ DreamOpenWRT 构建脚本
 
 环境变量：
   OPENWRT_REF     源码 tag 或分支，默认 v25.12.6
+  BUILD_VERSION   构建版本号（如 2026.11.11.3），写进固件 /etc/dreamopenwrt-version；
+                  留空则本地构建自动用 local-<日期时间>
   JOBS            编译并行度，默认 CPU 核心数
   DL_JOBS         下载并行度，默认 CPU 核心数 x2
   SKIP_DEPS=1     跳过 apt 依赖安装
@@ -572,6 +606,7 @@ main() {
   sync_custom_packages
   sync_overlay
   embed_adguardhome
+  write_version_info
   write_config
   download_sources
   build_image

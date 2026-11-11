@@ -159,15 +159,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 计算版本标识
+      - name: 计算版本号
         id: meta
         env:
           INPUT_REF: ${{ inputs.ref }}
         run: |
           echo "ref=${INPUT_REF:-v25.12.6}" >>"$GITHUB_OUTPUT"
-          # runner 是 UTC，按北京时间取日期，否则 08:00 前的构建会标成前一天。
+
+          # 日期按北京时间取，否则 08:00 前的构建会标成前一天。
           # 用 POSIX 的 CST-8 而不是 Asia/Shanghai：前者不依赖 tzdata，本地也能验证。
-          echo "stamp=$(TZ=CST-8 date +%Y.%m.%d)" >>"$GITHUB_OUTPUT"
+          stamp="$(TZ=CST-8 date +%Y.%m.%d)"
+          echo "stamp=$stamp" >>"$GITHUB_OUTPUT"
+
+          # 当天第几次构建：数已有的 snapshot-<日期>.<N> tag，取最大 N 加一。
+          # 用 tag 而不是 Actions API —— tag 才是「已发布」的真实凭据，
+          # 失败或没走到发版步骤的构建不会占号，也不需要额外的 API 权限。
+          # 查询失败必须硬失败：静默当成 0 会让每次构建都算成 .1，然后互相覆盖。
+          if ! raw="$(git ls-remote --tags origin "refs/tags/snapshot-${stamp}.*")"; then
+            echo "::error::查询已有 snapshot tag 失败，无法确定构建流水号"
+            exit 1
+          fi
+          last="$(printf '%s\n' "$raw" | grep -v '\^{}' | awk -F. '{print $NF}' \
+                  | grep -E '^[0-9]+$' | sort -n | tail -1)"
+          seq=$(( ${last:-0} + 1 ))
+          version="${stamp}.${seq}"
+
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
+          echo "本次构建版本：${version}"
 
       # 标准 runner 的根分区只有 70GB 左右，预装的一堆 SDK 一次都用不上
       - name: 释放磁盘空间
@@ -203,6 +221,7 @@ jobs:
         env:
           OPENWRT_REF: ${{ steps.meta.outputs.ref }}
           JOBS: ${{ inputs.jobs }}
+          BUILD_VERSION: ${{ steps.meta.outputs.version }}
         run: ./build-openwrt.sh
 
       - name: 停止残留编译进程并检查缓存目录
@@ -253,7 +272,7 @@ jobs:
       - name: 上传固件
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-x86-64-${{ steps.meta.outputs.stamp }}-r${{ github.run_number }}.${{ github.run_attempt }}
+          name: openwrt-x86-64-${{ steps.meta.outputs.version }}
           path: |
             output/*.img.gz
             output/*rootfs.tar.gz
@@ -270,7 +289,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ steps.meta.outputs.stamp }}-r${{ github.run_number }}.${{ github.run_attempt }}
+          name: build-logs-${{ steps.meta.outputs.version }}-${{ github.run_attempt }}
           path: work/build-logs/*.log
           retention-days: 7
           if-no-files-found: warn
@@ -283,6 +302,7 @@ jobs:
             echo ""
             echo "| 项 | 值 |"
             echo "| --- | --- |"
+            echo "| 构建版本 | \`${{ steps.meta.outputs.version }}\` |"
             echo "| 源码 ref | \`${{ steps.meta.outputs.ref }}\` |"
             echo "| 提交 | \`$(git -C work/openwrt rev-parse --short HEAD 2>/dev/null || echo n/a)\` |"
             echo "| 并行度 | \`${{ inputs.jobs || 'auto' }}\` |"
@@ -302,25 +322,25 @@ jobs:
             fi
           } >>"$GITHUB_STEP_SUMMARY"
 
-      # 日常构建（push main / 手动触发 / 定时）成功后，按构建日期更新当天的快照 Release。
-      # tag 用 snapshot-<日期>：同一天多次构建覆盖同名产物，跨天则各留一份。
-      # 产物名由 OpenWrt 生成、不含 commit，所以同一天重复构建不会堆出重复文件。
+      # 日常构建（push main / 手动触发 / 定时）成功后，发一份带流水号的快照 Release。
+      # tag 是 snapshot-<日期>.<当天第几次>，每次构建各留一份，历史版本都能下载。
       # ref_type != 'tag' 用表达式而不是 !startsWith(...)：YAML 里裸 `!` 开头会被当成 tag 解析。
-      - name: 发布滚动快照 Release
+      - name: 发布构建快照 Release
         if: success() && github.ref_type != 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: snapshot-${{ steps.meta.outputs.stamp }}
-          name: 构建快照 ${{ steps.meta.outputs.stamp }}
+          tag_name: snapshot-${{ steps.meta.outputs.version }}
+          name: 构建快照 ${{ steps.meta.outputs.version }}
           prerelease: true
-          # 默认就是 true，显式写出来：同一天重复构建时同名产物要被替换而不是报 already_exists
+          # 并发算出同一个号时互相覆盖，而不是报 already_exists
           overwrite_files: true
           body: |
-            > 同一天的多次成功构建会覆盖这里，产物始终是当天最后一次成功构建的结果。
-            > 需要固定版本、可长期回滚请打 `fw-v*` tag 发正式 Release。
+            > 每次成功构建各留一份，tag 里的最后一段是「当天第几次构建」。
+            > 需要长期固定的版本请打 `fw-v*` tag 发正式 Release。
 
             | 项 | 值 |
             | --- | --- |
+            | 构建版本 | `${{ steps.meta.outputs.version }}` |
             | 构建日期 | ${{ steps.meta.outputs.stamp }}（北京时间） |
             | OpenWrt 源码 | `${{ steps.meta.outputs.ref }}` |
             | 构建提交 | `${{ github.sha }}` |
@@ -328,6 +348,8 @@ jobs:
 
             刷机选 `*-combined-efi.img.gz`（UEFI 启动，Hyper-V 用第 2 代 + 关安全启动）；
             `*-combined.img.gz` 是传统 BIOS 引导。版本号与哈希见 `build-info.txt`、`sha256sums`。
+
+            刷完可以在路由器上 `cat /etc/dreamopenwrt-version` 核对是不是这个版本。
           files: |
             output/*.img.gz
             output/*rootfs.tar.gz
