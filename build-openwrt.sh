@@ -129,12 +129,22 @@ install_deps() {
 
   # 输出重定向到文件：dpkg 解包时会刷几百行 "Reading database ..."，把 Actions 日志撑长
   # 又没有信息量。失败时再把尾部打出来。
-  # shellcheck disable=SC2086
-  if ! $sudo_cmd apt-get update -qq >"$log" 2>&1 \
-    || ! $sudo_cmd apt-get install -y -qq --no-install-recommends "${APT_BASE[@]}" >>"$log" 2>&1; then
+  # GitHub 托管 runner 偶发 DNS 故障（"Temporary failure resolving ..."）会让 apt
+  # 卡十几分钟后失败，纯属瞬态问题：多试几次，仍然全失败才退出。
+  local attempt
+  local deps_ok=0
+  for attempt in 1 2 3; do
+    # shellcheck disable=SC2086
+    if $sudo_cmd apt-get update -qq >"$log" 2>&1 \
+      && $sudo_cmd apt-get install -y -qq --no-install-recommends "${APT_BASE[@]}" >>"$log" 2>&1; then
+      deps_ok=1
+      break
+    fi
     tail -n 40 "$log" >&2
-    die "基础依赖安装失败，详见 $log"
-  fi
+    [ "$attempt" -eq 3 ] || warn "apt 基础依赖安装失败（第 $attempt 次），30 秒后重试"
+    sleep 30
+  done
+  [ "$deps_ok" -eq 1 ] || die "基础依赖安装失败（已重试 3 次），详见 $log"
 
   # 可选依赖：先整体装一次，失败再逐个试。发行版升级后这些老包名会消失
   # （Ubuntu 26.04 上 ecj / ocaml-nox 之类就没了），逐个装能看出缺哪个，
